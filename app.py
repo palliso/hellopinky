@@ -1,4 +1,3 @@
-import sys
 import streamlit as st
 import requests
 import time
@@ -9,16 +8,17 @@ from telebot import types
 from datetime import datetime
 import pandas as pd
 import io
+import re
 
-# --- СЕКРЕТЫ ---
+# --- 1. НАСТРОЙКИ И СЕКРЕТЫ ---
 MODUL_TOKEN = st.secrets.get("MODUL_TOKEN", "")
 CP_ID = st.secrets.get("CP_ID", "")
 CP_SECRET = st.secrets.get("CP_SECRET", "")
 MY_INN = st.secrets.get("MY_INN", "")
-TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 SHEET_URL = st.secrets.get("SHEET_URL", "") 
+TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 
-# --- ИНИЦИАЛИЗАЦИЯ ---
+# --- 2. ИНИЦИАЛИЗАЦИЯ ---
 @st.cache_resource
 def init_bot():
     return telebot.TeleBot(TG_TOKEN)
@@ -27,7 +27,7 @@ bot = init_bot()
 
 @st.cache_resource
 def get_state():
-    return {"active_orders": {}, "users": {}, "company_id": None, "retail_point_id": None, "logs": [], "bot_running": False}
+    return {"active_orders": {}, "users": {}, "logs": [], "bot_running": False}
 
 state = get_state()
 
@@ -36,221 +36,247 @@ def add_log(msg):
     state["logs"].append(f"[{now}] {msg}")
     if len(state["logs"]) > 50: state["logs"].pop(0)
 
-# --- РАБОТА С БАНКОМ ---
-def get_retail_id():
-    headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
-    try:
-        if not state["company_id"]:
-            r_acc = requests.post("https://api.modulbank.ru/v1/account-info", headers=headers)
-            state["company_id"] = r_acc.json()[0].get("companyId") or r_acc.json()[0].get("id")
-        url = f"https://api.modulbank.ru/v1/sbp/retail-points?companyId={state['company_id']}"
-        return requests.get(url, headers=headers).json()[0].get("id")
-    except: return None
+# --- 3. ЛОГИКА ТАБЛИЦЫ ---
 
-def create_payment(amount, description):
-    rid = get_retail_id()
-    if not rid: return None, None
-    url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic"
-    payload = {"retailPointId": rid, "sum": float(amount), "extraInfo": description[:140], "lifetime": 15}
-    try:
-        r = requests.post(url, json=payload, headers={"Authorization": f"Bearer {MODUL_TOKEN}"})
-        return r.json().get("payload"), r.json().get("qrcId")
-    except: return None, None
-
-def send_receipt(amount, email, item_name):
-    auth = base64.b64encode(f"{CP_ID}:{CP_SECRET}".encode()).decode()
-    payload = {"Inn": MY_INN, "Type": "Income", "CustomerReceipt": {"Items": [{"label": item_name, "price": amount, "quantity": 1, "amount": amount, "vat": None, "method": 1, "object": 1}], "taxationSystem": 1, "email": email}}
-    try: requests.post("https://api.cloudpayments.ru/kkt/receipt", json=payload, headers={"Authorization": f"Basic {auth}"})
-    except: pass
-
-# --- КЭШ ТАБЛИЦЫ ---
 @st.cache_data(show_spinner=False)
 def fetch_cached_sheet(url):
     try:
         export_url = url.split("/edit")[0] + "/export?format=xlsx" if "/edit" in url else url
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(export_url, headers=headers, timeout=45)
+        if r.status_code != 200: return None
         return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
-    except: return None
+    except Exception as e:
+        add_log(f"Ошибка загрузки таблицы: {e}")
+        return None
 
-# --- ЭСТЕТИЧНЫЙ ПОИСК ---
 def get_items_from_sheet(username, target_status):
-    if not SHEET_URL: return "⚠️ Настройте ссылку в админке."
-    try:
-        all_sheets = fetch_cached_sheet(SHEET_URL)
-        if all_sheets is None: return "⚠️ Ошибка загрузки базы."
-        
-        found_data = {}
-        u_clean = username.lower().replace('@', '').strip()
-
-        for sheet_name, df in all_sheets.items():
-            if df.empty: continue
-            
-            status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
-            item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
-            razbor_col = next((c for c in df.columns if 'разбор' in str(c).lower()), None)
-            
-            if not status_col or not item_col: continue 
-                
-            df_status = df[df[status_col].astype(str).str.lower().str.strip() == target_status.lower()]
-            
-            for _, row in df_status.iterrows():
-                cell_text = str(row[item_col])
-                if u_clean not in cell_text.lower(): continue
-
-                razbor_num = str(row[razbor_col]).replace('.0', '') if razbor_col and pd.notna(row[razbor_col]) else "?"
-                parts = cell_text.replace('\n', ',').split(',')
-                
-                for part in parts:
-                    if u_clean in part.lower():
-                        pos = part.split('-', 1)[0].strip() if '-' in part else part.lower().replace(u_clean, '').replace('@', '').strip()
-                        if pos:
-                            if razbor_num not in found_data: found_data[razbor_num] = []
-                            found_data[razbor_num].append(pos)
-
-        if not found_data: return None
-            
-        # Формируем эстетичный ответ
-        res_text = f"✨ <b>Ваши заказы hellopinky</b>\n"
-        res_text += f"──────────────────\n"
-        res_text += f"📂 Статус: <i>{target_status.upper()}</i>\n\n"
-        
-        for r_num, items in found_data.items():
-            items_str = ", ".join(dict.fromkeys(items))
-            res_text += f"• разбор № {r_num} — <b>{items_str}</b>\n"
-        
-        res_text += f"\n──────────────────\n"
-        res_text += f"💌 @hellopinky_manager"
-        
-        return res_text
-    except: return "⚠️ Ошибка поиска."
-
-# --- ТЕЛЕГРАМ ЛОГИКА ---
-bot.message_handlers = []
-bot.callback_query_handlers = []
-
-@bot.message_handler(commands=['start'])
-def welcome(message):
-    msg = bot.send_message(message.chat.id, "🌸 Привет! Введите ваш логин:")
-    bot.register_next_step_handler(msg, main_menu)
-
-def main_menu(message):
-    username = message.text
-    state["users"][message.chat.id] = username 
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("📦 Отследить", callback_data="track"),
-               types.InlineKeyboardButton("💳 Оплатить", callback_data="pay"))
+    if not SHEET_URL: return "⚠️ Ссылка на таблицу не настроена."
+    all_sheets = fetch_cached_sheet(SHEET_URL)
+    if all_sheets is None: return "⚠️ Не удалось загрузить базу данных."
     
+    found_results = {}
+    # Подготавливаем ник для сравнения (учитываем оба варианта записи)
+    u_input = username.lower().strip()
+    u_no_at = u_input.replace('@', '')
+    u_with_at = f"@{u_no_at}"
+
+    for sheet_name, df in all_sheets.items():
+        if df.empty: continue
+        
+        # Поиск колонок
+        col_status = next((c for c in df.columns if any(x in str(c).lower() for x in ['статус', 'ждём', 'status'])), None)
+        col_items = next((c for c in df.columns if any(x in str(c).lower() for x in ['позиции', 'товар', 'коллективка'])), None)
+        col_id = next((c for c in df.columns if any(x in str(c).lower() for x in ['разбор', 'заказ', '№', 'юз'])), None)
+
+        if not col_status or not col_items: continue
+
+        mask = df[col_status].astype(str).str.lower().str.contains(target_status.lower().strip())
+        df_filtered = df[mask]
+
+        for _, row in df_filtered.iterrows():
+            raw_id = str(row[col_id]).replace('.0', '').strip() if col_id and pd.notna(row[col_id]) else "???"
+            cell_content = str(row[col_items] if col_items in row else "")
+            
+            # Проверяем наличие ника в ячейке целиком для скорости
+            if u_no_at not in cell_content.lower():
+                continue
+
+            # Разбиваем ячейку по строкам
+            lines = cell_content.split('\n')
+            user_items_in_row = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                
+                # Ищем разделитель (тире)
+                dash_match = re.search(r'[-—–]', line)
+                if dash_match:
+                    sep = dash_match.group()
+                    parts = line.split(sep)
+                    # Владелец — это то, что ПОСЛЕ тире
+                    owner_part = parts[-1].lower().strip()
+                    # Позиция — то, что ДО тире
+                    label_part = sep.join(parts[:-1]).strip()
+                    
+                    # Если после тире ПУСТО — пропускаем
+                    if not owner_part:
+                        continue
+                        
+                    # Если ник совпал (с @ или без)
+                    if u_no_at == owner_part.replace('@', '') or u_with_at == owner_part:
+                        user_items_in_row.append(label_part)
+                
+                # Случай без тире, но ник есть (индивидуальные заказы)
+                elif u_no_at in line.lower():
+                    clean_p = line.lower().replace(u_with_at, "").replace(u_no_at, "").replace('@', '').strip(' ,.()[]')
+                    if clean_p: user_items_in_row.append(clean_p.capitalize())
+
+            if user_items_in_row:
+                if raw_id not in found_results: found_results[raw_id] = []
+                found_results[raw_id].extend(user_items_in_row)
+
+    if not found_results: return None
+
+    # Оформление ответа
+    reply = f"🌸 <b>Ваши заказы hellopinky</b> ✨\n"
+    reply += f"──────────────────\n"
+    reply += f"📂 <i>Статус: {target_status.upper()}</i>\n\n"
+    
+    try:
+        sorted_keys = sorted(found_results.keys(), key=lambda x: int(''.join(filter(str.isdigit, str(x))) or 0))
+    except:
+        sorted_keys = sorted(found_results.keys())
+    
+    for r_num in sorted_keys:
+        items_list = [i.strip(' ,.') for i in found_results[r_num]]
+        # Склеиваем уникальные позиции
+        items_str = ", ".join(dict.fromkeys(items_list))
+        reply += f"📦 <b>Разбор № {r_num}</b>\n└─ {items_str}\n\n"
+    
+    reply += f"──────────────────\n"
+    reply += f"💌 <i>Есть вопросы? Пишите @hellopinky_manager</i>"
+    return reply
+
+# --- 4. ОПЛАТА И БАНК ---
+def create_payment(amount, description):
+    headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
+    try:
+        r_acc = requests.post("https://api.modulbank.ru/v1/account-info", headers=headers).json()
+        cid = r_acc[0].get("companyId") or r_acc[0].get("id")
+        pts = requests.get(f"https://api.modulbank.ru/v1/sbp/retail-points?companyId={cid}", headers=headers).json()
+        rid = pts[0].get("id")
+        res = requests.post("https://api.modulbank.ru/v1/sbp/qr-codes/dynamic", 
+                            json={"retailPointId": rid, "sum": float(amount), "extraInfo": description[:140], "lifetime": 15},
+                            headers=headers).json()
+        return res.get("payload"), res.get("qrcId")
+    except: return None, None
+
+# --- 5. ТЕЛЕГРАМ БОТ ---
+@bot.message_handler(commands=['start'])
+def start(message):
     welcome_text = (
-        f"✨ <b>Авторизация прошла успешно!</b>\n\n"
-        f"Добро пожаловать, <b>{username}</b>. Мы рады тебя видеть в hellopinky 🌸\n\n"
-        f"Выбери нужное действие ниже:"
+        "🌸 <b>Добро пожаловать в hellopinky!</b> ✨\n\n"
+        "Я помогу вам найти ваши заказы в наших разборах и быстро их оплатить.\n\n"
+        "📝 Пожалуйста, напишите ваш <b>логин Telegram (с @)</b>, под которым вы записаны в таблице:"
     )
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="HTML")
+    msg = bot.send_message(message.chat.id, welcome_text, parse_mode="HTML")
+    bot.register_next_step_handler(msg, login)
+
+def login(message):
+    user = message.text.strip()
+    if not user.startswith('@'):
+        user = f"@{user}"
+    state["users"][message.chat.id] = user
+    show_menu(message.chat.id, user)
+
+def show_menu(chat_id, user):
+    menu_text = (
+        f"🎀 <b>Личный кабинет</b>\n"
+        f"👤 Пользователь: <code>{user}</code>\n\n"
+        f"Выберите действие ниже:"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("📦 Отследить", callback_data="track"),
+        types.InlineKeyboardButton("💳 Оплатить", callback_data="pay"),
+        types.InlineKeyboardButton("👩‍💻 Менеджер", url="https://t.me/hellopinky_manager")
+    )
+    bot.send_message(chat_id, menu_text, reply_markup=kb, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: True)
-def handle_call(call):
+def handle_query(call):
     bot.answer_callback_query(call.id)
     uid = call.message.chat.id
     user = state["users"].get(uid)
-    if not user: return bot.send_message(uid, "Пожалуйста, нажми /start")
+    if not user: return bot.send_message(uid, "❌ Ошибка сессии. Введите /start")
 
     if call.data == "track":
-        m = types.InlineKeyboardMarkup(row_width=1)
-        m.add(types.InlineKeyboardButton("🛒 Выкуплен", callback_data="st_выкуплен"),
-              types.InlineKeyboardButton("🇨🇳 На кит адресе", callback_data="st_на кит адресе"),
-              types.InlineKeyboardButton("🚚 Едет в РФ", callback_data="st_едет в рф"),
-              types.InlineKeyboardButton("🇷🇺 В РФ", callback_data="st_в рф"),
-              types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
-        bot.edit_message_text("✨ <b>Выбери статус для проверки:</b>", uid, call.message.message_id, reply_markup=m, parse_mode="HTML")
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        st_list = [("🛒 Выкуплен", "st_выкуплен"), ("🇨🇳 Кит адрес", "st_на кит адресе"), ("🚚 Едет в РФ", "st_едет в рф"), ("🇷🇺 В РФ", "st_в рф")]
+        for n, c in st_list: kb.add(types.InlineKeyboardButton(n, callback_data=c))
+        kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
+        bot.edit_message_text("🔍 <b>Выберите статус для поиска:</b>", uid, call.message.message_id, reply_markup=kb, parse_mode="HTML")
     
     elif call.data.startswith("st_"):
         status = call.data.split("_")[1]
+        load_msg = bot.send_message(uid, "⏳ <i>Ищу ваши боксы в таблицах...</i>", parse_mode="HTML")
         res = get_items_from_sheet(user, status)
-        bot.send_message(uid, res if res else "Ничего не найдено 🥺", parse_mode="HTML")
+        bot.delete_message(uid, load_msg.message_id)
+        if res:
+            bot.send_message(uid, res, parse_mode="HTML")
+        else:
+            bot.send_message(uid, f"🥺 По статусу <b>«{status}»</b> для <b>{user}</b> ничего не найдено.\n\nПроверьте, правильно ли указан ник в /start.", parse_mode="HTML")
 
     elif call.data == "back":
-        main_menu_back(call.message, user)
+        bot.delete_message(uid, call.message.message_id)
+        show_menu(uid, user)
 
     elif call.data == "pay":
-        msg = bot.send_message(uid, "📝 Что мы оплачиваем сегодня?")
-        bot.register_next_step_handler(msg, ask_amt)
+        msg = bot.send_message(uid, "🛍 <b>Что вы хотите оплатить?</b>\n(Например: Разбор №21 или Сет)")
+        bot.register_next_step_handler(msg, pay_amt)
 
-def main_menu_back(message, user):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(types.InlineKeyboardButton("📦 Отследить", callback_data="track"),
-               types.InlineKeyboardButton("💳 Оплатить", callback_data="pay"))
-    bot.edit_message_text(f"✨ <b>Главное меню</b>\n\nЧем я могу помочь, {user}?", message.chat.id, message.message_id, reply_markup=markup, parse_mode="HTML")
-
-def ask_amt(message):
+def pay_amt(message):
     item = message.text
-    msg = bot.send_message(message.chat.id, f"💳 Введи сумму для <b>{item}</b>:", parse_mode="HTML")
-    bot.register_next_step_handler(msg, ask_mail, item)
+    msg = bot.send_message(message.chat.id, f"💰 <b>Введите сумму за «{item}»:</b>\n(Только цифры)")
+    bot.register_next_step_handler(msg, pay_email, item)
 
-def ask_mail(message, item):
+def pay_email(message, item):
     try:
-        amt = float(message.text)
-        msg = bot.send_message(message.chat.id, "📧 Твой E-mail для чека:")
-        bot.register_next_step_handler(msg, finish_pay, item, amt)
-    except: bot.send_message(message.chat.id, "❌ Нужно ввести число. Начни заново: /start")
+        amt = float(message.text.replace(' ', ''))
+        bot.send_message(message.chat.id, "📧 <b>Ваш Email для отправки чека:</b>")
+        bot.register_next_step_handler(message, pay_final, item, amt)
+    except:
+        bot.send_message(message.chat.id, "❌ Ошибка! Введите число. Попробуйте нажать «Оплатить» еще раз.")
 
-def finish_pay(message, item, amt):
-    mail = message.text
-    bot.send_message(message.chat.id, "🔄 Формирую безопасную ссылку...")
+def pay_final(message, item, amt):
+    email = message.text.strip()
+    if "@" not in email: return bot.send_message(message.chat.id, "❌ Некорректный Email.")
+    
+    load = bot.send_message(message.chat.id, "⏳ <i>Связываюсь с банком...</i>", parse_mode="HTML")
     link, qid = create_payment(amt, item)
+    bot.delete_message(message.chat.id, load.message_id)
+    
     if link:
-        state["active_orders"][qid] = {"chat_id": message.chat.id, "item": item, "amt": amt, "mail": mail, "ts": time.time(), "user": state["users"].get(message.chat.id)}
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"💳 Оплатить {amt} ₽", url=link))
-        
-        pay_text = (
-            f"✅ <b>Счет успешно сформирован!</b>\n"
-            f"──────────────────\n"
-            f"📦 <b>Товар:</b> {item}\n"
-            f"💰 <b>К оплате:</b> {amt} ₽\n"
-            f"──────────────────\n"
-            f"⏳ Ссылка активна 15 минут."
-        )
-        bot.send_message(message.chat.id, pay_text, reply_markup=markup, parse_mode="HTML")
-    else: bot.send_message(message.chat.id, "❌ Ошибка банка. Попробуй позже.")
+        state["active_orders"][qid] = {"chat_id": message.chat.id, "email": email, "item": item, "amt": amt, "time": time.time()}
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(f"💳 Перейти к оплате {amt} ₽", url=link))
+        bot.send_message(message.chat.id, f"✅ <b>Счет готов!</b>\n\n📦 {item}\n💰 {amt} ₽", reply_markup=kb, parse_mode="HTML")
+    else:
+        bot.send_message(message.chat.id, "❌ Ошибка банка. Напишите менеджеру.")
 
-# --- ФОНОВЫЕ ЗАДАЧИ ---
-@st.cache_resource
-def start_tasks():
+# --- 6. ЗАПУСК ---
+def run_tasks():
     if state["bot_running"]: return
     state["bot_running"] = True
-    def checker():
+    def check_pay():
         while True:
             for qid, o in list(state["active_orders"].items()):
-                if time.time() - o["ts"] > 900: del state["active_orders"][qid]
+                if time.time() - o["time"] > 900: del state["active_orders"][qid]
                 else:
                     try:
-                        r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers={"Authorization": f"Bearer {MODUL_TOKEN}"})
-                        if r.status_code == 200 and r.json().get("status") == "Accepted":
-                            bot.send_message(o["chat_id"], f"🎉 <b>Оплата получена!</b>\n\nЧек отправлен на {o['mail']}. Спасибо за заказ! ✨", parse_mode="HTML")
-                            send_receipt(o["amt"], o["mail"], o["item"])
+                        r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers={"Authorization": f"Bearer {MODUL_TOKEN}"}).json()
+                        if r.get("status") == "Accepted":
+                            bot.send_message(o["chat_id"], f"🎉 <b>Оплата прошла успешно!</b>\n\nСпасибо за покупку в hellopinky! 🌸 Чек отправлен на почту.", parse_mode="HTML")
                             del state["active_orders"][qid]
                     except: pass
             time.sleep(10)
-    def poller():
+    def polling():
         while True:
-            try: bot.polling(none_stop=True, interval=2)
-            except: time.sleep(10)
-    threading.Thread(target=checker, daemon=True).start()
-    threading.Thread(target=poller, daemon=True).start()
+            try: bot.polling(none_stop=True)
+            except: time.sleep(5)
+    threading.Thread(target=check_pay, daemon=True).start()
+    threading.Thread(target=polling, daemon=True).start()
 
-start_tasks()
+run_tasks()
 
-# --- АДМИНКА ---
-st.title("🤖 Hellopinky Admin")
-st.write("──────────────────")
-if st.button("🗑 Сбросить кэш таблицы"):
+# --- 7. АДМИНКА ---
+st.set_page_config(page_title="hellopinky Admin", page_icon="🌸")
+st.title("🌸 hellopinky Management")
+if st.button("🗑 ОБНОВИТЬ ДАННЫЕ ИЗ ТАБЛИЦЫ", use_container_width=True):
     fetch_cached_sheet.clear()
-    st.success("Данные таблицы обновлены!")
+    st.success("Таблица успешно перечитана!")
 
-if state["active_orders"]:
-    st.write("### ⏳ Активные счета:")
-    for q, o in state["active_orders"].items():
-        st.info(f"👤 {o.get('user')} | 📦 {o['item']} — {o['amt']}₽")
-else:
-    st.write("Ожидающих оплат нет.")
+st.divider()
+st.write("### 📜 Системные события")
+st.code("\n".join(reversed(state["logs"])))
