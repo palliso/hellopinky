@@ -1,4 +1,3 @@
-import sys
 import streamlit as st
 import requests
 import time
@@ -16,17 +15,23 @@ MY_INN = st.secrets.get("MY_INN", "")
 # Токен НОВОГО бота hellopinky
 TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 
-bot = telebot.TeleBot(TG_TOKEN)
+# --- ГЛОБАЛЬНАЯ БАЗА ДАННЫХ И БОТ ---
+# Используем cache_resource для инициализации бота только один раз
+@st.cache_resource
+def init_bot():
+    return telebot.TeleBot(TG_TOKEN)
 
-# --- ГЛОБАЛЬНАЯ БАЗА ДАННЫХ ---
+bot = init_bot()
+
 @st.cache_resource
 def get_state():
     return {
         "active_orders": {}, 
-        "users": {},  # НОВОЕ: Тут бот будет помнить логины клиентов (chat_id -> username)
+        "users": {},
         "company_id": None,
         "retail_point_id": None,
-        "logs": []
+        "logs": [],
+        "bot_running": False # Флаг для контроля потока
     }
 
 state = get_state()
@@ -79,13 +84,104 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
-# --- ФОНОВЫЙ РОБОТ И БОТ ---
+# --- ОБРАБОТЧИКИ ТЕЛЕГРАМ (Определяются один раз) ---
+# Очищаем обработчики перед регистрацией, чтобы они не дублировались
+bot.message_handlers = []
+bot.callback_query_handlers = []
+
+@bot.message_handler(commands=['start'])
+def welcome_and_auth(message):
+    msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nДля начала работы, пожалуйста, введите ваш логин (юзернейм) в нашей системе:")
+    bot.register_next_step_handler(msg, send_welcome_menu)
+
+def send_welcome_menu(message):
+    username = message.text
+    state["users"][message.chat.id] = username 
+    
+    welcome_text = (
+        f"🎉 Авторизация прошла успешно!\n\n"
+        f"Добро пожаловать в **hellopinky** — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
+        f"По всем вопросам вы можете обратиться к нашим заботливым менеджерам:\n"
+        f"💬 @hellopinky_manager\n"
+        f"💬 @melamories\n\n"
+        f"Что будем делать дальше, {username}?"
+    )
+    
+    markup = types.InlineKeyboardMarkup()
+    btn_track = types.InlineKeyboardButton("📦 Отследить", callback_data="track")
+    btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
+    markup.add(btn_track, btn_pay)
+    
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_buttons(call):
+    bot.answer_callback_query(call.id) 
+    chat_id = call.message.chat.id
+    username = state["users"].get(chat_id, "Гость")
+    
+    if call.data == "pay":
+        msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
+        bot.register_next_step_handler(msg, ask_amount)
+        
+    elif call.data == "track":
+        bot.send_message(chat_id, "🛠 В данный момент функция отслеживания настраивается. Совсем скоро вы сможете проверять статус своих боксов прямо здесь!")
+
+def ask_amount(message):
+    item = message.text
+    msg = bot.send_message(message.chat.id, f"Введите сумму к оплате за '{item}' (только цифры):")
+    bot.register_next_step_handler(msg, ask_email, item)
+
+def ask_email(message, item):
+    try:
+        amt = float(message.text)
+        msg = bot.send_message(message.chat.id, "И последнее: напишите ваш E-mail для получения чека:")
+        bot.register_next_step_handler(msg, generate_bill, item, amt)
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Сумма должна быть числом. Начните заново: /start")
+
+def generate_bill(message, item, amt):
+    email = message.text
+    chat_id = message.chat.id
+    username = state["users"].get(chat_id, "Гость")
+
+    if "@" not in email:
+        bot.send_message(chat_id, "❌ Некорректный E-mail. Начните заново: /start")
+        return
+
+    bot.send_message(chat_id, "🔄 Генерирую счет...")
+    
+    link, qid = create_payment(amt, item)
+    if link and qid:
+        state["active_orders"][qid] = {
+            "chat_id": chat_id,
+            "username": username,
+            "item": item,
+            "amt": amt,
+            "email": email,
+            "created_at": time.time()
+        }
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
+        
+        bot.send_message(chat_id, 
+                         f"✅ **Счет готов!**\n\n"
+                         f"👤 Клиент: {username}\n"
+                         f"📦 Заказ: {item}\n"
+                         f"💰 Сумма: {amt} ₽\n\n"
+                         f"⏳ У вас есть ровно 15 минут на оплату.", 
+                         reply_markup=markup, parse_mode="Markdown")
+        add_log(f"Счет на {amt}р выставлен для {username}")
+    else:
+        bot.send_message(chat_id, "❌ Ошибка связи с банком. Попробуйте позже.")
+
+
+# --- ЗАПУСК ФОНОВЫХ ПРОЦЕССОВ ---
 @st.cache_resource
-def start_bot():
-    if "telegram_bot_running" in sys.modules:
-        add_log("⚡ Попытка двойного запуска предотвращена.")
-        return True
-    sys.modules["telegram_bot_running"] = True
+def start_background_tasks():
+    if state["bot_running"]: return True
+    state["bot_running"] = True
 
     try: bot.remove_webhook()
     except: pass
@@ -119,108 +215,20 @@ def start_bot():
             except Exception as e: pass
             time.sleep(10)
 
-    def telegram_loop():
-        # ШАГ 1: АВТОРИЗАЦИЯ
-        @bot.message_handler(commands=['start'])
-        def welcome_and_auth(message):
-            msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nДля начала работы, пожалуйста, введите ваш логин (юзернейм) в нашей системе:")
-            bot.register_next_step_handler(msg, send_welcome_menu)
-
-        # ШАГ 2: КРАСИВОЕ ГЛАВНОЕ МЕНЮ С КНОПКАМИ
-        def send_welcome_menu(message):
-            username = message.text
-            # Запоминаем логин пользователя
-            state["users"][message.chat.id] = username 
-            
-            welcome_text = (
-                f"🎉 Авторизация прошла успешно!\n\n"
-                f"Добро пожаловать в **hellopinky** — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
-                f"По всем вопросам вы можете обратиться к нашим заботливым менеджерам:\n"
-                f"💬 @hellopinky_manager\n"
-                f"💬 @melamories\n\n"
-                f"Что будем делать дальше, {username}?"
-            )
-            
-            # Создаем кнопки
-            markup = types.InlineKeyboardMarkup()
-            btn_track = types.InlineKeyboardButton("📦 Отследить", callback_data="track")
-            btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
-            markup.add(btn_track, btn_pay)
-            
-            bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
-
-        # ШАГ 3: ОБРАБОТКА НАЖАТИЙ НА КНОПКИ
-        @bot.callback_query_handler(func=lambda call: True)
-        def handle_buttons(call):
-            bot.answer_callback_query(call.id) # Убираем "часики" с кнопки
-            chat_id = call.message.chat.id
-            username = state["users"].get(chat_id, "Гость") # Вспоминаем логин
-            
-            if call.data == "pay":
-                msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
-                bot.register_next_step_handler(msg, ask_amount)
-                
-            elif call.data == "track":
-                # Заглушка для кнопки "Отследить"
-                bot.send_message(chat_id, "🛠 В данный момент функция отслеживания настраивается. Совсем скоро вы сможете проверять статус своих боксов прямо здесь!")
-
-        # ШАГ 4: ВОРОНКА ОПЛАТЫ
-        def ask_amount(message):
-            item = message.text
-            msg = bot.send_message(message.chat.id, f"Введите сумму к оплате за '{item}' (только цифры):")
-            bot.register_next_step_handler(msg, ask_email, item)
-
-        def ask_email(message, item):
+    def tg_polling():
+        # Запускаем polling с защитой от ошибок
+        while True:
             try:
-                amt = float(message.text)
-                msg = bot.send_message(message.chat.id, "И последнее: напишите ваш E-mail для получения чека:")
-                bot.register_next_step_handler(msg, generate_bill, item, amt)
-            except ValueError:
-                bot.send_message(message.chat.id, "❌ Сумма должна быть числом. Начните заново: /start")
-
-        def generate_bill(message, item, amt):
-            email = message.text
-            chat_id = message.chat.id
-            username = state["users"].get(chat_id, "Гость")
-
-            if "@" not in email:
-                bot.send_message(chat_id, "❌ Некорректный E-mail. Начните заново: /start")
-                return
-
-            bot.send_message(chat_id, "🔄 Генерирую счет...")
-            
-            link, qid = create_payment(amt, item)
-            if link and qid:
-                state["active_orders"][qid] = {
-                    "chat_id": chat_id,
-                    "username": username,
-                    "item": item,
-                    "amt": amt,
-                    "email": email,
-                    "created_at": time.time()
-                }
-                
-                markup = types.InlineKeyboardMarkup()
-                markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
-                
-                bot.send_message(chat_id, 
-                                 f"✅ **Счет готов!**\n\n"
-                                 f"👤 Клиент: {username}\n"
-                                 f"📦 Заказ: {item}\n"
-                                 f"💰 Сумма: {amt} ₽\n\n"
-                                 f"⏳ У вас есть ровно 15 минут на оплату.", 
-                                 reply_markup=markup, parse_mode="Markdown")
-                add_log(f"Счет на {amt}р выставлен для {username}")
-            else:
-                bot.send_message(chat_id, "❌ Ошибка связи с банком. Попробуйте позже.")
-
-        bot.infinity_polling(timeout=60)
+                bot.polling(none_stop=True, timeout=60)
+            except Exception as e:
+                add_log(f"Ошибка polling: {e}")
+                time.sleep(5) # Ждем 5 секунд перед перезапуском
 
     threading.Thread(target=checker_loop, daemon=True).start()
-    threading.Thread(target=telegram_loop, daemon=True).start()
+    threading.Thread(target=tg_polling, daemon=True).start()
     return True
 
-start_bot()
+start_background_tasks()
 
 # --- СЕКРЕТНАЯ АДМИНКА (STREAMLIT UI) ---
 st.set_page_config(page_title="Админка hellopinky", layout="centered")
