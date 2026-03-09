@@ -86,7 +86,7 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
-# --- КЭШИРОВАНИЕ ТАБЛИЦЫ (Запоминаем НАВСЕГДА, пока не нажмут кнопку сброса) ---
+# --- КЭШИРОВАНИЕ ТАБЛИЦЫ ---
 @st.cache_data(show_spinner=False)
 def fetch_cached_sheet(url):
     try:
@@ -122,6 +122,8 @@ def get_items_from_sheet(username, target_status):
             
             status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
             item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
+            # Ищем колонку с номером разбора
+            razbor_col = next((c for c in df.columns if 'разбор' in str(c).lower()), None)
             
             if not status_col or not item_col:
                 continue 
@@ -137,9 +139,15 @@ def get_items_from_sheet(username, target_status):
             for _, row in results.iterrows():
                 items_found += 1
                 item_name = str(row[item_col]).replace('<', '&lt;').replace('>', '&gt;')
-                safe_sheet = str(sheet_name).replace('<', '&lt;').replace('>', '&gt;')
                 
-                reply += f"📦 {item_name} <i>(Лист: {safe_sheet})</i>\n"
+                # Если колонка "разбор" найдена, берем ее, иначе пишем без нее
+                if razbor_col:
+                    razbor_num = str(row[razbor_col]).replace('<', '&lt;').replace('>', '&gt;')
+                    # Убираем лишние ".0", если Питон прочитал число как дробное (например, "5.0")
+                    if razbor_num.endswith(".0"): razbor_num = razbor_num[:-2]
+                    reply += f"📦 <b>Разбор №{razbor_num}</b>: {item_name}\n"
+                else:
+                    reply += f"📦 {item_name}\n"
                 
         if items_found == 0:
             return None
@@ -183,10 +191,8 @@ def handle_buttons(call):
     bot.answer_callback_query(call.id) 
     chat_id = call.message.chat.id
     
-    # Пытаемся вспомнить логин
     username = state["users"].get(chat_id)
     
-    # Защита от потери памяти при перезагрузке
     if not username:
         bot.send_message(chat_id, "⚠️ Ой, кажется, я забыл ваш логин (система обновлялась). Пожалуйста, нажмите /start и авторизуйтесь заново!")
         return
@@ -205,7 +211,7 @@ def handle_buttons(call):
         markup.add(btn1, btn2, btn3, btn4, btn_back)
         
         bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, 
-                              text=f"🔍 Выберите статус, чтобы проверить ваши боксы, <b>{username}</b>:", 
+                              text=f"🔍 Выберите статус, чтобы проверить ваши боксы:", 
                               reply_markup=markup, parse_mode="HTML")
                               
     elif call.data.startswith("status_"):
@@ -217,7 +223,7 @@ def handle_buttons(call):
         if result_text:
             bot.send_message(chat_id, result_text, parse_mode="HTML")
         else:
-            bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» для логина <b>{username}</b> не найдено. 🥺", parse_mode="HTML")
+            bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» не найдено. 🥺", parse_mode="HTML")
 
     elif call.data == "back_to_main":
         welcome_text = f"Что будем делать дальше, <b>{username}</b>?"
@@ -351,7 +357,6 @@ with col2:
     st.write("### 📜 Логи:")
     st.code("\n".join(reversed(state["logs"])))
     
-    # КНОПКА ДЛЯ РУЧНОЙ ОЧИСТКИ КЭША ТАБЛИЦЫ
     st.write("### ⚙️ Управление данными:")
     if st.button("🗑 Сбросить кэш таблицы (Загрузить свежую)", use_container_width=True):
         fetch_cached_sheet.clear()
