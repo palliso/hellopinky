@@ -92,7 +92,15 @@ def get_items_from_sheet(username, target_status):
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
         export_url = SHEET_URL.split("/edit")[0] + "/export?format=xlsx" if "/edit" in SHEET_URL else SHEET_URL
-        r = requests.get(export_url)
+        
+        # МАГИЯ ЗДЕСЬ: Маскируемся под браузер Chrome и даем 60 секунд на скачивание
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        r = requests.get(export_url, headers=headers, timeout=60)
+        
+        if r.status_code != 200:
+            add_log(f"Гугл вернул ошибку {r.status_code}")
+            return "⚠️ Не удалось скачать данные от Google. Попробуйте еще раз."
+
         all_sheets = pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
         
         reply = f"🔍 Вот ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
@@ -126,6 +134,9 @@ def get_items_from_sheet(username, target_status):
             return None
             
         return reply
+    except requests.exceptions.ChunkedEncodingError:
+        add_log("Обрыв связи с Google (Response ended prematurely)")
+        return "⚠️ Таблица слишком большая или Google прервал связь. Попробуйте еще раз через секунду."
     except Exception as e:
         add_log(f"Ошибка чтения таблицы: {e}")
         return "⚠️ Произошла ошибка при поиске в базе данных. Проверьте ссылку."
