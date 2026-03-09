@@ -97,78 +97,74 @@ def fetch_cached_sheet(url):
         return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
     except: return None
 
-# --- НОВЫЙ ЛИНГВИСТИЧЕСКИЙ ПОИСК ---
+# --- СУПЕР-СТРОГИЙ ПОИСК (ТВОЯ ЛОГИКА) ---
 def get_items_from_sheet(username, target_status):
     if not SHEET_URL:
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
         all_sheets = fetch_cached_sheet(SHEET_URL)
         if all_sheets is None:
-            return "⚠️ Не удалось получить данные. Нажмите «Сбросить кэш» в админке."
+            return "⚠️ Не удалось получить данные. Сбросьте кэш в админке."
         
-        # Словарь для группировки: { "10": ["6", "10"], "23": ["твайлайт"] }
         found_data = {}
-        
+        u_clean = username.lower().replace('@', '').strip()
+
         for sheet_name, df in all_sheets.items():
             if df.empty: continue
             
-            # Ищем колонки
+            # Названия колонок
             status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
             item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
             razbor_col = next((c for c in df.columns if 'разбор' in str(c).lower()), None)
             
             if not status_col or not item_col: continue 
                 
-            # Фильтруем по статусу
+            # Фильтр по статусу
             df_status = df[df[status_col].astype(str).str.lower().str.strip() == target_status.lower()]
-            if df_status.empty: continue
             
             for _, row in df_status.iterrows():
-                # Проверяем, есть ли в этой строке упоминание юзера (чтобы не брать чужие разборы)
-                row_str = " ".join(row.astype(str).lower())
-                if username.lower().replace('@', '') not in row_str:
-                    continue
-
                 cell_text = str(row[item_col])
-                razbor_num = str(row[razbor_col]).replace('.0', '') if razbor_col and pd.notna(row[razbor_col]) else "???"
+                razbor_num = str(row[razbor_col]).replace('.0', '').strip() if razbor_col and pd.notna(row[razbor_col]) else "???"
                 
-                # Парсим строки внутри ячейки
-                lines = cell_text.split('\n')
+                # Разбиваем ячейку на части (по запятой или переносу строки)
+                parts = cell_text.replace('\n', ',').split(',')
                 user_items = []
-                for line in lines:
-                    line = line.strip()
-                    if not line: continue
+                
+                for part in parts:
+                    part = part.strip()
+                    if not part or '-' not in part: continue
                     
-                    if '-' in line:
-                        parts = line.split('-', 1)
-                        label = parts[0].strip()
-                        handle = parts[1].strip()
-                        # Если после тире ПУСТО — это наше!
-                        if not handle:
-                            user_items.append(label)
-                    else:
-                        # Если ТИРЕ НЕТ вообще — скорее всего это тоже наша позиция (как в твоем примере)
-                        user_items.append(line)
+                    label, owner = part.split('-', 1)
+                    owner_clean = owner.lower().replace('@', '').strip()
+                    label_clean = label.strip()
+                    
+                    # СТРОГОЕ УСЛОВИЕ: Ник должен совпадать (не пусто!)
+                    if owner_clean and u_clean in owner_clean:
+                        user_items.append(label_clean)
                 
                 if user_items:
                     if razbor_num not in found_data:
                         found_data[razbor_num] = []
-                    found_data[razbor_num].extend(user_items)
+                    for i in user_items:
+                        if i not in found_data[razbor_num]:
+                            found_data[razbor_num].append(i)
 
         if not found_data:
             return None
             
-        # Формируем красивый ответ
+        # Формируем ответ
         reply = f"🔍 Ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
-        for r_num, items in found_data.items():
-            # Убираем дубликаты и склеиваем через запятую
-            items_str = ", ".join(dict.fromkeys(items))
-            reply += f"• <b>Разбор № {r_num}</b> — {items_str}\n"
+        # Сортируем разборы (числовые в начало)
+        sorted_keys = sorted(found_data.keys(), key=lambda x: int(x) if x.isdigit() else 999)
+        
+        for r_num in sorted_keys:
+            items_str = ", ".join(found_data[r_num])
+            reply += f"• <b>разбор № {r_num}</b> — {items_str}\n"
             
         return reply
     except Exception as e:
         add_log(f"Ошибка поиска: {e}")
-        return "⚠️ Ошибка при чтении данных таблицы."
+        return "⚠️ Ошибка при обработке таблицы."
 
 # --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
@@ -176,7 +172,7 @@ bot.callback_query_handlers = []
 
 @bot.message_handler(commands=['start'])
 def welcome_and_auth(message):
-    msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nВведите ваш логин (юзернейм) в нашей системе:")
+    msg = bot.send_message(message.chat.id, "👋 Привет!\n\nВведите ваш логин (юзернейм) в нашей системе:")
     bot.register_next_step_handler(msg, send_welcome_menu)
 
 def send_welcome_menu(message):
@@ -185,7 +181,6 @@ def send_welcome_menu(message):
     welcome_text = (
         f"🎉 Авторизация успешна!\n\n"
         f"Добро пожаловать в <b>hellopinky</b>🌸✨\n\n"
-        f"Менеджеры: @hellopinky_manager, @melamories\n\n"
         f"Что будем делать, <b>{username}</b>?"
     )
     markup = types.InlineKeyboardMarkup()
@@ -204,7 +199,7 @@ def handle_buttons(call):
         return
     
     if call.data == "pay":
-        msg = bot.send_message(chat_id, "🛍️ Что оплачиваем? (Название товара)")
+        msg = bot.send_message(chat_id, "🛍️ Что оплачиваем?")
         bot.register_next_step_handler(msg, ask_amount)
     elif call.data == "track":
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -217,7 +212,7 @@ def handle_buttons(call):
                               text=f"🔍 Выберите статус:", reply_markup=markup, parse_mode="HTML")
     elif call.data.startswith("status_"):
         target_status = call.data.split("_")[1]
-        bot.send_message(chat_id, f"🔄 Ищу ваши позиции «{target_status}»...")
+        bot.send_message(chat_id, f"🔄 Ищу позиции «{target_status}»...")
         res = get_items_from_sheet(username, target_status)
         bot.send_message(chat_id, res if res else f"Позиций со статусом «{target_status}» для вас не найдено. 🥺", parse_mode="HTML")
     elif call.data == "back_to_main":
@@ -230,6 +225,7 @@ def welcome_menu_back(message, username):
     bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id, 
                           text=f"Что будем делать, <b>{username}</b>?", reply_markup=markup, parse_mode="HTML")
 
+# --- ОПЛАТА ---
 def ask_amount(message):
     item = message.text
     msg = bot.send_message(message.chat.id, f"Сумма за '{item}' (только цифры):")
@@ -240,13 +236,13 @@ def ask_email(message, item):
         amt = float(message.text)
         msg = bot.send_message(message.chat.id, "Ваш E-mail для чека:")
         bot.register_next_step_handler(msg, generate_bill, item, amt)
-    except: bot.send_message(message.chat.id, "❌ Ошибка. Начните заново: /start")
+    except: bot.send_message(message.chat.id, "❌ Ошибка. /start")
 
 def generate_bill(message, item, amt):
     email = message.text
     username = state["users"].get(message.chat.id, "Гость")
     if "@" not in email:
-        bot.send_message(message.chat.id, "❌ Неверный email. /start")
+        bot.send_message(message.chat.id, "❌ Ошибка Email. /start")
         return
     bot.send_message(message.chat.id, "🔄 Генерирую счет...")
     link, qid = create_payment(amt, item)
@@ -264,48 +260,18 @@ def start_background_tasks():
     state["bot_running"] = True
     try: bot.remove_webhook()
     except: pass
-    def checker_loop():
-        headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
-        while True:
-            try:
-                now_ts = time.time()
-                for qid, order in list(state["active_orders"].items()):
-                    if now_ts - order["created_at"] > 900:
-                        bot.send_message(order["chat_id"], f"⏳ Время на оплату '{order['item']}' вышло.")
-                        del state["active_orders"][qid]
-                    else:
-                        r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers=headers)
-                        if r.status_code == 200 and r.json().get("status") == "Accepted":
-                            bot.send_message(order["chat_id"], f"🎉 Оплата получена!")
-                            send_receipt(r.json().get("amount", order["amt"]), order["email"], order["item"])
-                            del state["active_orders"][qid]
-            except: pass
-            time.sleep(10)
     def tg_polling():
         while True:
             try: bot.polling(none_stop=True, interval=2, timeout=20)
-            except telebot.apihelper.ApiTelegramException as e:
-                if e.error_code == 409: time.sleep(15)
-                else: time.sleep(5)
             except: time.sleep(5)
-    threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=tg_polling, daemon=True).start()
     return True
 
 start_background_tasks()
 
 # --- АДМИНКА ---
-st.set_page_config(page_title="Админка hellopinky", layout="centered")
+st.set_page_config(page_title="Админка hellopinky")
 st.title("🤖 Панель hellopinky")
-c1, c2 = st.columns(2)
-with c1:
-    st.write("### ⏳ Ждут оплаты:")
-    for qid, o in state["active_orders"].items():
-        st.warning(f"👤 {o['username']}\n📦 {o['item']}")
-with c2:
-    st.write("### 📜 Логи:")
-    st.code("\n".join(reversed(state["logs"])))
-    if st.button("🗑 Сбросить кэш таблицы"):
-        fetch_cached_sheet.clear()
-        add_log("Кэш очищен")
-if st.button("🔄 Обновить панель"): st.rerun()
+if st.button("🗑 Сбросить кэш таблицы"):
+    fetch_cached_sheet.clear()
+    st.success("Кэш очищен")
