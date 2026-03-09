@@ -97,27 +97,22 @@ def fetch_cached_sheet(url):
         return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
     except: return None
 
-# --- ГЛАВНАЯ ФУНКЦИЯ: ПОИСК И ВЫЧЛЕНЕНИЕ ПОЗИЦИЙ ---
+# --- НОВЫЙ ЛИНГВИСТИЧЕСКИЙ ПОИСК ---
 def get_items_from_sheet(username, target_status):
     if not SHEET_URL:
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
         all_sheets = fetch_cached_sheet(SHEET_URL)
         if all_sheets is None:
-            return "⚠️ Не удалось получить данные. Попробуйте сбросить кэш в админке."
+            return "⚠️ Не удалось получить данные. Нажмите «Сбросить кэш» в админке."
         
-        reply_lines = []
-        items_found = 0
+        # Словарь для группировки: { "10": ["6", "10"], "23": ["твайлайт"] }
+        found_data = {}
         
-        # Готовим ник для поиска
-        u_clean = username.lower().strip()
-        u_at = u_clean if u_clean.startswith('@') else f"@{u_clean}"
-        u_no_at = u_clean.replace('@', '')
-
         for sheet_name, df in all_sheets.items():
             if df.empty: continue
             
-            # Ищем нужные колонки
+            # Ищем колонки
             status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
             item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
             razbor_col = next((c for c in df.columns if 'разбор' in str(c).lower()), None)
@@ -127,41 +122,53 @@ def get_items_from_sheet(username, target_status):
             # Фильтруем по статусу
             df_status = df[df[status_col].astype(str).str.lower().str.strip() == target_status.lower()]
             if df_status.empty: continue
-                
-            # Идем по каждой строке со статусом
+            
             for _, row in df_status.iterrows():
+                # Проверяем, есть ли в этой строке упоминание юзера (чтобы не брать чужие разборы)
+                row_str = " ".join(row.astype(str).lower())
+                if username.lower().replace('@', '') not in row_str:
+                    continue
+
                 cell_text = str(row[item_col])
+                razbor_num = str(row[razbor_col]).replace('.0', '') if razbor_col and pd.notna(row[razbor_col]) else "???"
                 
-                # Если ник вообще есть в этой ячейке
-                if u_no_at in cell_text.lower():
-                    # Делим содержимое ячейки на куски по запятой
-                    chunks = cell_text.split(',')
+                # Парсим строки внутри ячейки
+                lines = cell_text.split('\n')
+                user_items = []
+                for line in lines:
+                    line = line.strip()
+                    if not line: continue
                     
-                    for chunk in chunks:
-                        # Если конкретно в этом куске есть наш ник
-                        if u_no_at in chunk.lower():
-                            items_found += 1
-                            
-                            # Очищаем текст: убираем ник, @ и лишние пробелы
-                            clean_item = chunk.lower().replace(u_at, "").replace(u_no_at, "").replace('@', '').strip()
-                            # Делаем первую букву заглавной
-                            clean_item = clean_item.capitalize()
-                            
-                            # Добавляем номер разбора, если он есть
-                            if razbor_col and pd.notna(row[razbor_col]):
-                                r_num = str(row[razbor_col]).replace('.0', '')
-                                reply_lines.append(f"📦 <b>Разбор №{r_num}</b>: {clean_item}")
-                            else:
-                                reply_lines.append(f"📦 {clean_item}")
+                    if '-' in line:
+                        parts = line.split('-', 1)
+                        label = parts[0].strip()
+                        handle = parts[1].strip()
+                        # Если после тире ПУСТО — это наше!
+                        if not handle:
+                            user_items.append(label)
+                    else:
+                        # Если ТИРЕ НЕТ вообще — скорее всего это тоже наша позиция (как в твоем примере)
+                        user_items.append(line)
                 
-        if items_found == 0:
+                if user_items:
+                    if razbor_num not in found_data:
+                        found_data[razbor_num] = []
+                    found_data[razbor_num].extend(user_items)
+
+        if not found_data:
             return None
             
-        final_reply = f"🔍 Ваши позиции со статусом <b>«{target_status}»</b>:\n\n" + "\n".join(reply_lines)
-        return final_reply
+        # Формируем красивый ответ
+        reply = f"🔍 Ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
+        for r_num, items in found_data.items():
+            # Убираем дубликаты и склеиваем через запятую
+            items_str = ", ".join(dict.fromkeys(items))
+            reply += f"• <b>Разбор № {r_num}</b> — {items_str}\n"
+            
+        return reply
     except Exception as e:
-        add_log(f"Ошибка парсинга: {e}")
-        return "⚠️ Ошибка при чтении таблицы."
+        add_log(f"Ошибка поиска: {e}")
+        return "⚠️ Ошибка при чтении данных таблицы."
 
 # --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
@@ -288,7 +295,7 @@ def start_background_tasks():
 start_background_tasks()
 
 # --- АДМИНКА ---
-st.set_page_config(page_title="Админка hellopinky")
+st.set_page_config(page_title="Админка hellopinky", layout="centered")
 st.title("🤖 Панель hellopinky")
 c1, c2 = st.columns(2)
 with c1:
@@ -301,4 +308,4 @@ with c2:
     if st.button("🗑 Сбросить кэш таблицы"):
         fetch_cached_sheet.clear()
         add_log("Кэш очищен")
-if st.button("🔄 Обновить"): st.rerun()
+if st.button("🔄 Обновить панель"): st.rerun()
