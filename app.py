@@ -92,47 +92,40 @@ def fetch_cached_sheet(url):
     try:
         export_url = url.split("/edit")[0] + "/export?format=xlsx" if "/edit" in url else url
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        
         r = requests.get(export_url, headers=headers, timeout=45)
-        
-        if r.status_code != 200:
-            add_log(f"Гугл вернул ошибку {r.status_code} при скачивании таблицы")
-            return None
-
+        if r.status_code != 200: return None
         return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
-    except Exception as e:
-        add_log(f"Ошибка при кэшировании таблицы: {e}")
-        return None
+    except: return None
 
-# --- УМНЫЙ ПОИСК ПО ВСЕМ ЛИСТАМ ---
+# --- УМНЫЙ ПОИСК (ИСПРАВЛЕННЫЙ) ---
 def get_items_from_sheet(username, target_status):
     if not SHEET_URL:
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
         all_sheets = fetch_cached_sheet(SHEET_URL)
-        
         if all_sheets is None:
-            return "⚠️ Не удалось получить данные от Google. Сервер перегружен. Попробуйте еще раз через минуту."
+            return "⚠️ Не удалось получить данные от Google. Попробуйте еще раз."
         
-        reply = f"🔍 Вот ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
+        reply_lines = []
         items_found = 0
         
         for sheet_name, df in all_sheets.items():
             if df.empty: continue
             
+            # Находим нужные колонки
             status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
             item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
-            # Ищем колонку с номером разбора
             razbor_col = next((c for c in df.columns if 'разбор' in str(c).lower()), None)
             
-            if not status_col or not item_col:
-                continue 
+            if not status_col or not item_col: continue 
                 
-            status_match = df[status_col].astype(str).str.lower().str.strip() == target_status.lower()
-            df_status = df[status_match]
+            # Шаг 1: Фильтруем только нужный статус
+            df_status = df[df[status_col].astype(str).str.lower().str.strip() == target_status.lower()]
             
             if df_status.empty: continue
                 
+            # Шаг 2: Фильтруем только строки этого пользователя
+            # Ищем юзернейм во всех колонках текущей отфильтрованной таблицы
             mask_user = df_status.apply(lambda row: username.lower() in row.astype(str).str.lower().str.cat(sep=' '), axis=1)
             results = df_status[mask_user]
             
@@ -140,22 +133,20 @@ def get_items_from_sheet(username, target_status):
                 items_found += 1
                 item_name = str(row[item_col]).replace('<', '&lt;').replace('>', '&gt;')
                 
-                # Если колонка "разбор" найдена, берем ее, иначе пишем без нее
-                if razbor_col:
-                    razbor_num = str(row[razbor_col]).replace('<', '&lt;').replace('>', '&gt;')
-                    # Убираем лишние ".0", если Питон прочитал число как дробное (например, "5.0")
-                    if razbor_num.endswith(".0"): razbor_num = razbor_num[:-2]
-                    reply += f"📦 <b>Разбор №{razbor_num}</b>: {item_name}\n"
+                if razbor_col and pd.notna(row[razbor_col]):
+                    razbor_num = str(row[razbor_col]).replace('.0', '').replace('<', '&lt;').replace('>', '&gt;')
+                    reply_lines.append(f"📦 <b>Разбор №{razbor_num}</b>: {item_name}")
                 else:
-                    reply += f"📦 {item_name}\n"
+                    reply_lines.append(f"📦 {item_name}")
                 
         if items_found == 0:
             return None
             
-        return reply
+        final_reply = f"🔍 Ваши позиции со статусом <b>«{target_status}»</b>:\n\n" + "\n".join(reply_lines)
+        return final_reply
     except Exception as e:
-        add_log(f"Ошибка поиска в таблице: {e}")
-        return "⚠️ Произошла внутренняя ошибка при поиске. Проверьте логи."
+        add_log(f"Ошибка поиска: {e}")
+        return "⚠️ Произошла ошибка при поиске."
 
 # --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
@@ -163,176 +154,118 @@ bot.callback_query_handlers = []
 
 @bot.message_handler(commands=['start'])
 def welcome_and_auth(message):
-    msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nДля начала работы, пожалуйста, введите ваш логин (юзернейм) в нашей системе:")
+    msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nВведите ваш логин (юзернейм) в нашей системе:")
     bot.register_next_step_handler(msg, send_welcome_menu)
 
 def send_welcome_menu(message):
     username = message.text
     state["users"][message.chat.id] = username 
-    
     welcome_text = (
-        f"🎉 Авторизация прошла успешно!\n\n"
-        f"Добро пожаловать в <b>hellopinky</b> — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
-        f"По всем вопросам вы можете обратиться к нашим заботливым менеджерам:\n"
-        f"💬 @hellopinky_manager\n"
-        f"💬 @melamories\n\n"
-        f"Что будем делать дальше, <b>{username}</b>?"
+        f"🎉 Авторизация успешна!\n\n"
+        f"Добро пожаловать в <b>hellopinky</b>🌸✨\n\n"
+        f"Менеджеры: @hellopinky_manager, @melamories\n\n"
+        f"Что будем делать, <b>{username}</b>?"
     )
-    
     markup = types.InlineKeyboardMarkup()
-    btn_track = types.InlineKeyboardButton("📦 Отследить", callback_data="track")
-    btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
-    markup.add(btn_track, btn_pay)
-    
+    markup.add(types.InlineKeyboardButton("📦 Отследить", callback_data="track"),
+               types.InlineKeyboardButton("💳 Оплатить", callback_data="pay"))
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_buttons(call):
     bot.answer_callback_query(call.id) 
     chat_id = call.message.chat.id
-    
     username = state["users"].get(chat_id)
     
     if not username:
-        bot.send_message(chat_id, "⚠️ Ой, кажется, я забыл ваш логин (система обновлялась). Пожалуйста, нажмите /start и авторизуйтесь заново!")
+        bot.send_message(chat_id, "⚠️ Сессия истекла. Нажмите /start")
         return
     
     if call.data == "pay":
-        msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
+        msg = bot.send_message(chat_id, "🛍️ Что оплачиваем? (Название товара)")
         bot.register_next_step_handler(msg, ask_amount)
-        
     elif call.data == "track":
         markup = types.InlineKeyboardMarkup(row_width=1)
-        btn1 = types.InlineKeyboardButton("🛒 Выкуплен", callback_data="status_выкуплен")
-        btn2 = types.InlineKeyboardButton("🇨🇳 На кит адресе", callback_data="status_на кит адресе")
-        btn3 = types.InlineKeyboardButton("🚚 Едет в РФ", callback_data="status_едет в рф")
-        btn4 = types.InlineKeyboardButton("🇷🇺 В РФ", callback_data="status_в рф")
-        btn_back = types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")
-        markup.add(btn1, btn2, btn3, btn4, btn_back)
-        
+        markup.add(types.InlineKeyboardButton("🛒 Выкуплен", callback_data="status_выкуплен"),
+                   types.InlineKeyboardButton("🇨🇳 На кит адресе", callback_data="status_на кит адресе"),
+                   types.InlineKeyboardButton("🚚 Едет в РФ", callback_data="status_едет в рф"),
+                   types.InlineKeyboardButton("🇷🇺 В РФ", callback_data="status_в рф"),
+                   types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_main"))
         bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, 
-                              text=f"🔍 Выберите статус, чтобы проверить ваши боксы:", 
-                              reply_markup=markup, parse_mode="HTML")
-                              
+                              text=f"🔍 Выберите статус:", reply_markup=markup, parse_mode="HTML")
     elif call.data.startswith("status_"):
         target_status = call.data.split("_")[1]
-        bot.send_message(chat_id, f"🔄 Ищу информацию по статусу «{target_status}»...")
-        
-        result_text = get_items_from_sheet(username, target_status)
-        
-        if result_text:
-            bot.send_message(chat_id, result_text, parse_mode="HTML")
-        else:
-            bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» не найдено. 🥺", parse_mode="HTML")
-
+        bot.send_message(chat_id, f"🔄 Ищу позиции со статусом «{target_status}»...")
+        res = get_items_from_sheet(username, target_status)
+        bot.send_message(chat_id, res if res else f"Позиций со статусом «{target_status}» не найдено. 🥺", parse_mode="HTML")
     elif call.data == "back_to_main":
-        welcome_text = f"Что будем делать дальше, <b>{username}</b>?"
-        markup = types.InlineKeyboardMarkup()
-        btn_track = types.InlineKeyboardButton("📦 Отследить", callback_data="track")
-        btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
-        markup.add(btn_track, btn_pay)
-        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=welcome_text, reply_markup=markup, parse_mode="HTML")
+        welcome_menu_back(call.message, username)
+
+def welcome_menu_back(message, username):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📦 Отследить", callback_data="track"),
+               types.InlineKeyboardButton("💳 Оплатить", callback_data="pay"))
+    bot.edit_message_text(chat_id=message.chat.id, message_id=message.message_id, 
+                          text=f"Что будем делать, <b>{username}</b>?", reply_markup=markup, parse_mode="HTML")
 
 def ask_amount(message):
     item = message.text
-    msg = bot.send_message(message.chat.id, f"Введите сумму к оплате за '{item}' (только цифры):")
+    msg = bot.send_message(message.chat.id, f"Сумма за '{item}' (только цифры):")
     bot.register_next_step_handler(msg, ask_email, item)
 
 def ask_email(message, item):
     try:
         amt = float(message.text)
-        msg = bot.send_message(message.chat.id, "И последнее: напишите ваш E-mail для получения чека:")
+        msg = bot.send_message(message.chat.id, "Ваш E-mail для чека:")
         bot.register_next_step_handler(msg, generate_bill, item, amt)
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ Сумма должна быть числом. Начните заново: /start")
+    except: bot.send_message(message.chat.id, "❌ Ошибка. Начните заново: /start")
 
 def generate_bill(message, item, amt):
     email = message.text
-    chat_id = message.chat.id
-    username = state["users"].get(chat_id, "Гость")
-
+    username = state["users"].get(message.chat.id, "Гость")
     if "@" not in email:
-        bot.send_message(chat_id, "❌ Некорректный E-mail. Начните заново: /start")
+        bot.send_message(message.chat.id, "❌ Неверный email. /start")
         return
-
-    bot.send_message(chat_id, "🔄 Генерирую счет...")
-    
+    bot.send_message(message.chat.id, "🔄 Генерирую счет...")
     link, qid = create_payment(amt, item)
     if link and qid:
-        state["active_orders"][qid] = {
-            "chat_id": chat_id,
-            "username": username,
-            "item": item,
-            "amt": amt,
-            "email": email,
-            "created_at": time.time()
-        }
-        
+        state["active_orders"][qid] = {"chat_id": message.chat.id, "username": username, "item": item, "amt": amt, "email": email, "created_at": time.time()}
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
-        
-        bot.send_message(chat_id, 
-                         f"✅ <b>Счет готов!</b>\n\n"
-                         f"👤 Клиент: {username}\n"
-                         f"📦 Заказ: {item}\n"
-                         f"💰 Сумма: {amt} ₽\n\n"
-                         f"⏳ У вас есть ровно 15 минут на оплату.", 
-                         reply_markup=markup, parse_mode="HTML")
-        add_log(f"Счет на {amt}р выставлен для {username}")
-    else:
-        bot.send_message(chat_id, "❌ Ошибка связи с банком. Попробуйте позже.")
+        bot.send_message(message.chat.id, f"✅ <b>Счет готов!</b>\n📦 {item}\n💰 {amt} ₽", reply_markup=markup, parse_mode="HTML")
+    else: bot.send_message(message.chat.id, "❌ Ошибка банка.")
 
 # --- ЗАПУСК ФОНОВЫХ ПРОЦЕССОВ ---
 @st.cache_resource
 def start_background_tasks():
     if state["bot_running"]: return True
     state["bot_running"] = True
-
     try: bot.remove_webhook()
     except: pass
-
     def checker_loop():
         headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
         while True:
             try:
                 now_ts = time.time()
-                orders = list(state["active_orders"].items())
-                
-                for qid, order in orders:
-                    chat_id = order["chat_id"]
-                    
+                for qid, order in list(state["active_orders"].items()):
                     if now_ts - order["created_at"] > 900:
-                        bot.send_message(chat_id, f"⏳ Время на оплату '{order['item']}' вышло. Заказ отменен. \n\nНажмите /start для новой попытки.")
+                        bot.send_message(order["chat_id"], f"⏳ Время на оплату '{order['item']}' вышло.")
                         del state["active_orders"][qid]
-                        add_log(f"Отменен заказ для юзера {order['username']}")
-                        continue
-
-                    r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers=headers)
-                    if r.status_code == 200:
-                        data = r.json()
-                        if data.get("status") == "Accepted":
-                            bot.send_message(chat_id, f"🎉 Оплата успешно получена, {order['username']}! Чек отправлен на {order['email']}.")
-                            add_log(f"💰 Оплата получена от {order['username']}!")
-                            
-                            send_receipt(data.get("amount", order["amt"]), order["email"], order["item"])
+                    else:
+                        r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers=headers)
+                        if r.status_code == 200 and r.json().get("status") == "Accepted":
+                            bot.send_message(order["chat_id"], f"🎉 Оплата получена! Чек на {order['email']}")
+                            send_receipt(r.json().get("amount", order["amt"]), order["email"], order["item"])
                             del state["active_orders"][qid]
-                            
-            except Exception as e: pass
+            except: pass
             time.sleep(10)
-
     def tg_polling():
         while True:
-            try:
-                bot.polling(none_stop=True, interval=2, timeout=20)
+            try: bot.polling(none_stop=True, interval=2, timeout=20)
             except telebot.apihelper.ApiTelegramException as e:
-                if e.error_code == 409:
-                    add_log("⚡ Конфликт 409: ждем 15 секунд, пока отключится старый бот...")
-                    time.sleep(15) 
-                else:
-                    time.sleep(5)
-            except Exception as e:
-                time.sleep(5)
-
+                if e.error_code == 409: time.sleep(15)
+                else: time.sleep(5)
+            except: time.sleep(5)
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=tg_polling, daemon=True).start()
     return True
@@ -341,27 +274,16 @@ start_background_tasks()
 
 # --- СЕКРЕТНАЯ АДМИНКА ---
 st.set_page_config(page_title="Админка hellopinky", layout="centered")
-st.title("🤖 Панель управления hellopinky")
-
-col1, col2 = st.columns(2)
-with col1:
+st.title("🤖 Панель hellopinky")
+c1, c2 = st.columns(2)
+with c1:
     st.write("### ⏳ Ждут оплаты:")
-    if state["active_orders"]:
-        for qid, order in state["active_orders"].items():
-            left_mins = int(15 - (time.time() - order['created_at']) / 60)
-            st.warning(f"👤 **{order['username']}**\n📦 {order['item']} ({order['amt']}₽)\n📧 {order['email']}\n\nОсталось: {left_mins} мин.")
-    else:
-        st.success("Очередь пуста")
-
-with col2:
+    for qid, o in state["active_orders"].items():
+        st.warning(f"👤 {o['username']}\n📦 {o['item']} ({o['amt']}₽)")
+with c2:
     st.write("### 📜 Логи:")
     st.code("\n".join(reversed(state["logs"])))
-    
-    st.write("### ⚙️ Управление данными:")
-    if st.button("🗑 Сбросить кэш таблицы (Загрузить свежую)", use_container_width=True):
+    if st.button("🗑 Сбросить кэш таблицы"):
         fetch_cached_sheet.clear()
-        add_log("Кэш таблицы очищен вручную.")
-        st.success("✅ Кэш очищен! При следующем поиске бот скачает самую свежую версию таблицы.")
-    
-if st.button("🔄 Обновить панель", use_container_width=True):
-    st.rerun()
+        add_log("Кэш очищен")
+if st.button("🔄 Обновить панель"): st.rerun()
