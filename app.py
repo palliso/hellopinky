@@ -12,7 +12,7 @@ MODUL_TOKEN = st.secrets.get("MODUL_TOKEN", "")
 CP_ID = st.secrets.get("CP_ID", "")
 CP_SECRET = st.secrets.get("CP_SECRET", "")
 MY_INN = st.secrets.get("MY_INN", "")
-TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" # Твой токен бота
+TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 
 bot = telebot.TeleBot(TG_TOKEN)
 
@@ -20,7 +20,7 @@ bot = telebot.TeleBot(TG_TOKEN)
 @st.cache_resource
 def get_state():
     return {
-        "active_orders": {}, # Тут бот хранит заказы, ожидающие оплаты
+        "active_orders": {}, 
         "company_id": None,
         "retail_point_id": None,
         "logs": []
@@ -55,7 +55,7 @@ def create_payment(amount, description):
         "retailPointId": state["retail_point_id"],
         "sum": float(amount),
         "extraInfo": description[:140],
-        "lifetime": 15 # Даем ровно 15 минут!
+        "lifetime": 15 
     }
     try:
         r = requests.post(url, json=payload, headers={"Authorization": f"Bearer {MODUL_TOKEN}"})
@@ -76,10 +76,9 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
-# --- ФОНОВЫЙ РОБОТ (ПРОВЕРКА И ДЕДЛАЙНЫ) ---
+# --- ФОНОВЫЙ РОБОТ ---
 @st.cache_resource
 def start_bot():
-    # 1. Поток для проверки оплат
     def checker_loop():
         headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
         while True:
@@ -90,11 +89,11 @@ def start_bot():
                 for qid, order in orders:
                     chat_id = order["chat_id"]
                     
-                    # ПРОВЕРКА ДЕДЛАЙНА (15 минут = 900 секунд)
+                    # ПРОВЕРКА ДЕДЛАЙНА
                     if now_ts - order["created_at"] > 900:
-                        bot.send_message(chat_id, f"⏳ Время на оплату '{order['item']}' вышло. Заказ отменен. \n\nЕсли хотите оформить новый, нажмите /start")
+                        bot.send_message(chat_id, f"⏳ Время на оплату '{order['item']}' вышло. Заказ отменен. \n\nНажмите /start для новой попытки.")
                         del state["active_orders"][qid]
-                        add_log(f"Отменен по тайм-ауту заказ для {order['email']}")
+                        add_log(f"Отменен заказ для юзера {order['username']}")
                         continue
 
                     # ПРОВЕРКА БАНКА
@@ -102,8 +101,8 @@ def start_bot():
                     if r.status_code == 200:
                         data = r.json()
                         if data.get("status") == "Accepted":
-                            bot.send_message(chat_id, "🎉 Оплата успешно получена! Чек отправлен вам на почту.")
-                            add_log(f"💰 Оплата получена! Бью чек для {order['email']}")
+                            bot.send_message(chat_id, f"🎉 Оплата успешно получена, {order['username']}! Чек отправлен на {order['email']}.")
+                            add_log(f"💰 Оплата получена от {order['username']}!")
                             
                             send_receipt(data.get("amount", order["amt"]), order["email"], order["item"])
                             del state["active_orders"][qid]
@@ -111,43 +110,50 @@ def start_bot():
             except Exception as e: pass
             time.sleep(10)
 
-    # 2. Поток для общения в Телеграме
     def telegram_loop():
-        # Шаг 1: Приветствие
+        # ШАГ 1: ПРИВЕТСТВИЕ И АВТОРИЗАЦИЯ
         @bot.message_handler(commands=['start'])
+        def welcome_and_auth(message):
+            msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nДля продолжения работы, пожалуйста, авторизуйтесь: напишите ваш логин (юзернейм) в нашей системе.")
+            bot.register_next_step_handler(msg, ask_item)
+
+        # ШАГ 2: СПРАШИВАЕМ ТОВАР
         def ask_item(message):
-            msg = bot.send_message(message.chat.id, "Привет! Что будем оплачивать? (Напишите название товара или услуги)")
-            bot.register_next_step_handler(msg, ask_amount)
+            username = message.text
+            msg = bot.send_message(message.chat.id, f"✅ Отлично, {username}! Вы успешно авторизованы.\n\nЧто будем оплачивать? (Напишите название товара или услуги)")
+            # Передаем юзернейм дальше по цепочке
+            bot.register_next_step_handler(msg, ask_amount, username)
 
-        # Шаг 2: Запрашиваем сумму
-        def ask_amount(message):
+        # ШАГ 3: СПРАШИВАЕМ СУММУ
+        def ask_amount(message, username):
             item = message.text
-            msg = bot.send_message(message.chat.id, f"Отлично. Введите сумму к оплате за '{item}' (только цифры):")
-            bot.register_next_step_handler(msg, ask_email, item)
+            msg = bot.send_message(message.chat.id, f"Введите сумму к оплате за '{item}' (только цифры):")
+            bot.register_next_step_handler(msg, ask_email, username, item)
 
-        # Шаг 3: Запрашиваем почту
-        def ask_email(message, item):
+        # ШАГ 4: СПРАШИВАЕМ ПОЧТУ
+        def ask_email(message, username, item):
             try:
                 amt = float(message.text)
-                msg = bot.send_message(message.chat.id, "И последнее: напишите ваш E-mail, куда мы отправим официальный чек:")
-                bot.register_next_step_handler(msg, generate_bill, item, amt)
+                msg = bot.send_message(message.chat.id, "И последнее: напишите ваш E-mail для получения чека:")
+                bot.register_next_step_handler(msg, generate_bill, username, item, amt)
             except ValueError:
                 bot.send_message(message.chat.id, "❌ Сумма должна быть числом. Начните заново: /start")
 
-        # Шаг 4: Генерируем ссылку
-        def generate_bill(message, item, amt):
+        # ШАГ 5: ВЫДАЕМ ССЫЛКУ
+        def generate_bill(message, username, item, amt):
             email = message.text
             if "@" not in email:
                 bot.send_message(message.chat.id, "❌ Некорректный E-mail. Начните заново: /start")
                 return
 
-            bot.send_message(message.chat.id, "🔄 Создаю безопасную ссылку для оплаты...")
+            bot.send_message(message.chat.id, "🔄 Генерирую счет...")
             
             link, qid = create_payment(amt, item)
             if link and qid:
-                # Запоминаем заказ для робота-проверяльщика
+                # Теперь мы сохраняем и логин клиента тоже!
                 state["active_orders"][qid] = {
                     "chat_id": message.chat.id,
+                    "username": username,
                     "item": item,
                     "amt": amt,
                     "email": email,
@@ -158,11 +164,13 @@ def start_bot():
                 markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
                 
                 bot.send_message(message.chat.id, 
-                                 f"✅ **Счет сформирован!**\n\n"
-                                 f"Товар: {item}\nСумма: {amt} ₽\n\n"
-                                 f"⏳ У вас есть ровно 15 минут на оплату, после чего ссылка сгорит.", 
+                                 f"✅ **Счет готов!**\n\n"
+                                 f"👤 Клиент: {username}\n"
+                                 f"📦 Заказ: {item}\n"
+                                 f"💰 Сумма: {amt} ₽\n\n"
+                                 f"⏳ Оплатите счет в течение 15 минут.", 
                                  reply_markup=markup, parse_mode="Markdown")
-                add_log(f"Выставлен счет на {amt}р для {email}")
+                add_log(f"Счет на {amt}р выставлен для {username} ({email})")
             else:
                 bot.send_message(message.chat.id, "❌ Ошибка связи с банком. Попробуйте позже.")
 
@@ -174,11 +182,9 @@ def start_bot():
 
 start_bot()
 
-# --- СЕКРЕТНАЯ АДМИНКА (ВИДНА ТОЛЬКО ТЕБЕ НА САЙТЕ) ---
+# --- СЕКРЕТНАЯ АДМИНКА ---
 st.set_page_config(page_title="Админка бота", layout="centered")
-st.title("🤖 Панель управления ботом")
-
-st.info("Бот запущен и работает в Telegram. Эта страница нужна для контроля заказов.")
+st.title("🤖 Панель управления")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -186,13 +192,14 @@ with col1:
     if state["active_orders"]:
         for qid, order in state["active_orders"].items():
             left_mins = int(15 - (time.time() - order['created_at']) / 60)
-            st.warning(f"**{order['item']}** ({order['amt']}₽) — {order['email']}\n\nОсталось: {left_mins} мин.")
+            # В админке теперь видно логин!
+            st.warning(f"👤 **{order['username']}**\n📦 {order['item']} ({order['amt']}₽)\n📧 {order['email']}\n\nОсталось: {left_mins} мин.")
     else:
         st.success("Очередь пуста")
 
 with col2:
-    st.write("### 📜 Логи событий:")
+    st.write("### 📜 Логи:")
     st.code("\n".join(reversed(state["logs"])))
     
-if st.button("🔄 Обновить данные", use_container_width=True):
+if st.button("🔄 Обновить", use_container_width=True):
     st.rerun()
