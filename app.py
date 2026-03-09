@@ -16,7 +16,6 @@ MY_INN = st.secrets.get("MY_INN", "")
 TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 
 # --- ГЛОБАЛЬНАЯ БАЗА ДАННЫХ И БОТ ---
-# Используем cache_resource для инициализации бота только один раз
 @st.cache_resource
 def init_bot():
     return telebot.TeleBot(TG_TOKEN)
@@ -31,7 +30,7 @@ def get_state():
         "company_id": None,
         "retail_point_id": None,
         "logs": [],
-        "bot_running": False # Флаг для контроля потока
+        "bot_running": False 
     }
 
 state = get_state()
@@ -84,8 +83,7 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
-# --- ОБРАБОТЧИКИ ТЕЛЕГРАМ (Определяются один раз) ---
-# Очищаем обработчики перед регистрацией, чтобы они не дублировались
+# --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
 bot.callback_query_handlers = []
 
@@ -98,13 +96,14 @@ def send_welcome_menu(message):
     username = message.text
     state["users"][message.chat.id] = username 
     
+    # ИСПРАВЛЕНИЕ: Перешли на HTML, чтобы подчеркивания в никах и логинах не ломали бота
     welcome_text = (
         f"🎉 Авторизация прошла успешно!\n\n"
-        f"Добро пожаловать в **hellopinky** — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
+        f"Добро пожаловать в <b>hellopinky</b> — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
         f"По всем вопросам вы можете обратиться к нашим заботливым менеджерам:\n"
         f"💬 @hellopinky_manager\n"
         f"💬 @melamories\n\n"
-        f"Что будем делать дальше, {username}?"
+        f"Что будем делать дальше, <b>{username}</b>?"
     )
     
     markup = types.InlineKeyboardMarkup()
@@ -112,13 +111,12 @@ def send_welcome_menu(message):
     btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
     markup.add(btn_track, btn_pay)
     
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_buttons(call):
     bot.answer_callback_query(call.id) 
     chat_id = call.message.chat.id
-    username = state["users"].get(chat_id, "Гость")
     
     if call.data == "pay":
         msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
@@ -165,17 +163,17 @@ def generate_bill(message, item, amt):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
         
+        # ИСПРАВЛЕНИЕ: И здесь тоже используем HTML
         bot.send_message(chat_id, 
-                         f"✅ **Счет готов!**\n\n"
+                         f"✅ <b>Счет готов!</b>\n\n"
                          f"👤 Клиент: {username}\n"
                          f"📦 Заказ: {item}\n"
                          f"💰 Сумма: {amt} ₽\n\n"
                          f"⏳ У вас есть ровно 15 минут на оплату.", 
-                         reply_markup=markup, parse_mode="Markdown")
+                         reply_markup=markup, parse_mode="HTML")
         add_log(f"Счет на {amt}р выставлен для {username}")
     else:
         bot.send_message(chat_id, "❌ Ошибка связи с банком. Попробуйте позже.")
-
 
 # --- ЗАПУСК ФОНОВЫХ ПРОЦЕССОВ ---
 @st.cache_resource
@@ -216,13 +214,12 @@ def start_background_tasks():
             time.sleep(10)
 
     def tg_polling():
-        # Запускаем polling с защитой от ошибок
         while True:
             try:
                 bot.polling(none_stop=True, timeout=60)
             except Exception as e:
                 add_log(f"Ошибка polling: {e}")
-                time.sleep(5) # Ждем 5 секунд перед перезапуском
+                time.sleep(5)
 
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=tg_polling, daemon=True).start()
