@@ -1,3 +1,4 @@
+import sys
 import streamlit as st
 import requests
 import time
@@ -12,6 +13,7 @@ MODUL_TOKEN = st.secrets.get("MODUL_TOKEN", "")
 CP_ID = st.secrets.get("CP_ID", "")
 CP_SECRET = st.secrets.get("CP_SECRET", "")
 MY_INN = st.secrets.get("MY_INN", "")
+# Токен НОВОГО бота
 TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 
 bot = telebot.TeleBot(TG_TOKEN)
@@ -76,9 +78,21 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
-# --- ФОНОВЫЙ РОБОТ ---
+# --- ФОНОВЫЙ РОБОТ И БОТ ---
 @st.cache_resource
 def start_bot():
+    # ЖЕСТКАЯ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА (ОШИБКА 409)
+    if "telegram_bot_running" in sys.modules:
+        add_log("⚡ Попытка двойного запуска предотвращена.")
+        return True
+    sys.modules["telegram_bot_running"] = True
+
+    # Очищаем кэш Телеграма
+    try:
+        bot.remove_webhook()
+    except:
+        pass
+
     def checker_loop():
         headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
         while True:
@@ -89,7 +103,7 @@ def start_bot():
                 for qid, order in orders:
                     chat_id = order["chat_id"]
                     
-                    # ПРОВЕРКА ДЕДЛАЙНА
+                    # ПРОВЕРКА ДЕДЛАЙНА (15 МИНУТ)
                     if now_ts - order["created_at"] > 900:
                         bot.send_message(chat_id, f"⏳ Время на оплату '{order['item']}' вышло. Заказ отменен. \n\nНажмите /start для новой попытки.")
                         del state["active_orders"][qid]
@@ -121,7 +135,6 @@ def start_bot():
         def ask_item(message):
             username = message.text
             msg = bot.send_message(message.chat.id, f"✅ Отлично, {username}! Вы успешно авторизованы.\n\nЧто будем оплачивать? (Напишите название товара или услуги)")
-            # Передаем юзернейм дальше по цепочке
             bot.register_next_step_handler(msg, ask_amount, username)
 
         # ШАГ 3: СПРАШИВАЕМ СУММУ
@@ -139,7 +152,7 @@ def start_bot():
             except ValueError:
                 bot.send_message(message.chat.id, "❌ Сумма должна быть числом. Начните заново: /start")
 
-        # ШАГ 5: ВЫДАЕМ ССЫЛКУ
+        # ШАГ 5: ГЕНЕРИРУЕМ ССЫЛКУ И КНОПКУ
         def generate_bill(message, username, item, amt):
             email = message.text
             if "@" not in email:
@@ -150,7 +163,6 @@ def start_bot():
             
             link, qid = create_payment(amt, item)
             if link and qid:
-                # Теперь мы сохраняем и логин клиента тоже!
                 state["active_orders"][qid] = {
                     "chat_id": message.chat.id,
                     "username": username,
@@ -174,7 +186,8 @@ def start_bot():
             else:
                 bot.send_message(message.chat.id, "❌ Ошибка связи с банком. Попробуйте позже.")
 
-        bot.infinity_polling()
+        # Защита от мелких обрывов связи
+        bot.infinity_polling(non_stop=True, timeout=60)
 
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=telegram_loop, daemon=True).start()
@@ -182,7 +195,7 @@ def start_bot():
 
 start_bot()
 
-# --- СЕКРЕТНАЯ АДМИНКА ---
+# --- СЕКРЕТНАЯ АДМИНКА (STREAMLIT UI) ---
 st.set_page_config(page_title="Админка бота", layout="centered")
 st.title("🤖 Панель управления")
 
@@ -192,7 +205,6 @@ with col1:
     if state["active_orders"]:
         for qid, order in state["active_orders"].items():
             left_mins = int(15 - (time.time() - order['created_at']) / 60)
-            # В админке теперь видно логин!
             st.warning(f"👤 **{order['username']}**\n📦 {order['item']} ({order['amt']}₽)\n📧 {order['email']}\n\nОсталось: {left_mins} мин.")
     else:
         st.success("Очередь пуста")
