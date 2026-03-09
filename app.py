@@ -95,7 +95,6 @@ def get_items_from_sheet(username, target_status):
         r = requests.get(export_url)
         all_sheets = pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
         
-        # Перевели форматирование в HTML
         reply = f"🔍 Вот ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
         items_found = 0
         
@@ -118,7 +117,6 @@ def get_items_from_sheet(username, target_status):
             
             for _, row in results.iterrows():
                 items_found += 1
-                # Очищаем названия от опасных символов HTML
                 item_name = str(row[item_col]).replace('<', '&lt;').replace('>', '&gt;')
                 safe_sheet = str(sheet_name).replace('<', '&lt;').replace('>', '&gt;')
                 
@@ -191,7 +189,6 @@ def handle_buttons(call):
         result_text = get_items_from_sheet(username, target_status)
         
         if result_text:
-            # ИСПРАВЛЕНО: Перевели выдачу таблицы в HTML
             bot.send_message(chat_id, result_text, parse_mode="HTML")
         else:
             bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» для логина <b>{username}</b> не найдено. 🥺", parse_mode="HTML")
@@ -294,9 +291,15 @@ def start_background_tasks():
     def tg_polling():
         while True:
             try:
-                bot.polling(none_stop=True, timeout=60)
+                # Добавили interval, чтобы не так агрессивно стучаться в Телеграм
+                bot.polling(none_stop=True, interval=2, timeout=20)
+            except telebot.apihelper.ApiTelegramException as e:
+                if e.error_code == 409:
+                    add_log("⚡ Конфликт 409: ждем 15 секунд, пока отключится старый бот...")
+                    time.sleep(15) # Ждем, пока Streamlit убьет старый процесс
+                else:
+                    time.sleep(5)
             except Exception as e:
-                add_log(f"Ошибка polling: {e}")
                 time.sleep(5)
 
     threading.Thread(target=checker_loop, daemon=True).start()
