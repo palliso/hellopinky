@@ -86,22 +86,33 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
-# --- УМНЫЙ ПОИСК ПО ВСЕМ ЛИСТАМ GOOGLE ТАБЛИЦЫ ---
+# --- КЭШИРОВАНИЕ ТАБЛИЦЫ (Запоминаем НАВСЕГДА, пока не нажмут кнопку сброса) ---
+@st.cache_data(show_spinner=False)
+def fetch_cached_sheet(url):
+    try:
+        export_url = url.split("/edit")[0] + "/export?format=xlsx" if "/edit" in url else url
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        
+        r = requests.get(export_url, headers=headers, timeout=45)
+        
+        if r.status_code != 200:
+            add_log(f"Гугл вернул ошибку {r.status_code} при скачивании таблицы")
+            return None
+
+        return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
+    except Exception as e:
+        add_log(f"Ошибка при кэшировании таблицы: {e}")
+        return None
+
+# --- УМНЫЙ ПОИСК ПО ВСЕМ ЛИСТАМ ---
 def get_items_from_sheet(username, target_status):
     if not SHEET_URL:
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
-        export_url = SHEET_URL.split("/edit")[0] + "/export?format=xlsx" if "/edit" in SHEET_URL else SHEET_URL
+        all_sheets = fetch_cached_sheet(SHEET_URL)
         
-        # МАГИЯ ЗДЕСЬ: Маскируемся под браузер Chrome и даем 60 секунд на скачивание
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        r = requests.get(export_url, headers=headers, timeout=60)
-        
-        if r.status_code != 200:
-            add_log(f"Гугл вернул ошибку {r.status_code}")
-            return "⚠️ Не удалось скачать данные от Google. Попробуйте еще раз."
-
-        all_sheets = pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
+        if all_sheets is None:
+            return "⚠️ Не удалось получить данные от Google. Сервер перегружен. Попробуйте еще раз через минуту."
         
         reply = f"🔍 Вот ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
         items_found = 0
@@ -134,12 +145,9 @@ def get_items_from_sheet(username, target_status):
             return None
             
         return reply
-    except requests.exceptions.ChunkedEncodingError:
-        add_log("Обрыв связи с Google (Response ended prematurely)")
-        return "⚠️ Таблица слишком большая или Google прервал связь. Попробуйте еще раз через секунду."
     except Exception as e:
-        add_log(f"Ошибка чтения таблицы: {e}")
-        return "⚠️ Произошла ошибка при поиске в базе данных. Проверьте ссылку."
+        add_log(f"Ошибка поиска в таблице: {e}")
+        return "⚠️ Произошла внутренняя ошибка при поиске. Проверьте логи."
 
 # --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
@@ -174,7 +182,14 @@ def send_welcome_menu(message):
 def handle_buttons(call):
     bot.answer_callback_query(call.id) 
     chat_id = call.message.chat.id
-    username = state["users"].get(chat_id, "Гость")
+    
+    # Пытаемся вспомнить логин
+    username = state["users"].get(chat_id)
+    
+    # Защита от потери памяти при перезагрузке
+    if not username:
+        bot.send_message(chat_id, "⚠️ Ой, кажется, я забыл ваш логин (система обновлялась). Пожалуйста, нажмите /start и авторизуйтесь заново!")
+        return
     
     if call.data == "pay":
         msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
@@ -302,12 +317,11 @@ def start_background_tasks():
     def tg_polling():
         while True:
             try:
-                # Добавили interval, чтобы не так агрессивно стучаться в Телеграм
                 bot.polling(none_stop=True, interval=2, timeout=20)
             except telebot.apihelper.ApiTelegramException as e:
                 if e.error_code == 409:
                     add_log("⚡ Конфликт 409: ждем 15 секунд, пока отключится старый бот...")
-                    time.sleep(15) # Ждем, пока Streamlit убьет старый процесс
+                    time.sleep(15) 
                 else:
                     time.sleep(5)
             except Exception as e:
@@ -337,5 +351,12 @@ with col2:
     st.write("### 📜 Логи:")
     st.code("\n".join(reversed(state["logs"])))
     
-if st.button("🔄 Обновить", use_container_width=True):
+    # КНОПКА ДЛЯ РУЧНОЙ ОЧИСТКИ КЭША ТАБЛИЦЫ
+    st.write("### ⚙️ Управление данными:")
+    if st.button("🗑 Сбросить кэш таблицы (Загрузить свежую)", use_container_width=True):
+        fetch_cached_sheet.clear()
+        add_log("Кэш таблицы очищен вручную.")
+        st.success("✅ Кэш очищен! При следующем поиске бот скачает самую свежую версию таблицы.")
+    
+if st.button("🔄 Обновить панель", use_container_width=True):
     st.rerun()
