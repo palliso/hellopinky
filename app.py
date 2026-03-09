@@ -13,7 +13,7 @@ MODUL_TOKEN = st.secrets.get("MODUL_TOKEN", "")
 CP_ID = st.secrets.get("CP_ID", "")
 CP_SECRET = st.secrets.get("CP_SECRET", "")
 MY_INN = st.secrets.get("MY_INN", "")
-# Токен НОВОГО бота
+# Токен НОВОГО бота hellopinky
 TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
 
 bot = telebot.TeleBot(TG_TOKEN)
@@ -23,6 +23,7 @@ bot = telebot.TeleBot(TG_TOKEN)
 def get_state():
     return {
         "active_orders": {}, 
+        "users": {},  # НОВОЕ: Тут бот будет помнить логины клиентов (chat_id -> username)
         "company_id": None,
         "retail_point_id": None,
         "logs": []
@@ -81,17 +82,13 @@ def send_receipt(amount, email, item_name):
 # --- ФОНОВЫЙ РОБОТ И БОТ ---
 @st.cache_resource
 def start_bot():
-    # ЖЕСТКАЯ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА
     if "telegram_bot_running" in sys.modules:
         add_log("⚡ Попытка двойного запуска предотвращена.")
         return True
     sys.modules["telegram_bot_running"] = True
 
-    # Очищаем кэш Телеграма
-    try:
-        bot.remove_webhook()
-    except:
-        pass
+    try: bot.remove_webhook()
+    except: pass
 
     def checker_loop():
         headers = {"Authorization": f"Bearer {MODUL_TOKEN}"}
@@ -103,14 +100,12 @@ def start_bot():
                 for qid, order in orders:
                     chat_id = order["chat_id"]
                     
-                    # ПРОВЕРКА ДЕДЛАЙНА (15 МИНУТ)
                     if now_ts - order["created_at"] > 900:
                         bot.send_message(chat_id, f"⏳ Время на оплату '{order['item']}' вышло. Заказ отменен. \n\nНажмите /start для новой попытки.")
                         del state["active_orders"][qid]
                         add_log(f"Отменен заказ для юзера {order['username']}")
                         continue
 
-                    # ПРОВЕРКА БАНКА
                     r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers=headers)
                     if r.status_code == 200:
                         data = r.json()
@@ -125,46 +120,79 @@ def start_bot():
             time.sleep(10)
 
     def telegram_loop():
-        # ШАГ 1: ПРИВЕТСТВИЕ И АВТОРИЗАЦИЯ
+        # ШАГ 1: АВТОРИЗАЦИЯ
         @bot.message_handler(commands=['start'])
         def welcome_and_auth(message):
-            msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nДля продолжения работы, пожалуйста, авторизуйтесь: напишите ваш логин (юзернейм) в нашей системе.")
-            bot.register_next_step_handler(msg, ask_item)
+            msg = bot.send_message(message.chat.id, "👋 Добро пожаловать!\n\nДля начала работы, пожалуйста, введите ваш логин (юзернейм) в нашей системе:")
+            bot.register_next_step_handler(msg, send_welcome_menu)
 
-        # ШАГ 2: СПРАШИВАЕМ ТОВАР
-        def ask_item(message):
+        # ШАГ 2: КРАСИВОЕ ГЛАВНОЕ МЕНЮ С КНОПКАМИ
+        def send_welcome_menu(message):
             username = message.text
-            msg = bot.send_message(message.chat.id, f"✅ Отлично, {username}! Вы успешно авторизованы.\n\nЧто будем оплачивать? (Напишите название товара или услуги)")
-            bot.register_next_step_handler(msg, ask_amount, username)
+            # Запоминаем логин пользователя
+            state["users"][message.chat.id] = username 
+            
+            welcome_text = (
+                f"🎉 Авторизация прошла успешно!\n\n"
+                f"Добро пожаловать в **hellopinky** — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
+                f"По всем вопросам вы можете обратиться к нашим заботливым менеджерам:\n"
+                f"💬 @hellopinky_manager\n"
+                f"💬 @melamories\n\n"
+                f"Что будем делать дальше, {username}?"
+            )
+            
+            # Создаем кнопки
+            markup = types.InlineKeyboardMarkup()
+            btn_track = types.InlineKeyboardButton("📦 Отследить", callback_data="track")
+            btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
+            markup.add(btn_track, btn_pay)
+            
+            bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
 
-        # ШАГ 3: СПРАШИВАЕМ СУММУ
-        def ask_amount(message, username):
+        # ШАГ 3: ОБРАБОТКА НАЖАТИЙ НА КНОПКИ
+        @bot.callback_query_handler(func=lambda call: True)
+        def handle_buttons(call):
+            bot.answer_callback_query(call.id) # Убираем "часики" с кнопки
+            chat_id = call.message.chat.id
+            username = state["users"].get(chat_id, "Гость") # Вспоминаем логин
+            
+            if call.data == "pay":
+                msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
+                bot.register_next_step_handler(msg, ask_amount)
+                
+            elif call.data == "track":
+                # Заглушка для кнопки "Отследить"
+                bot.send_message(chat_id, "🛠 В данный момент функция отслеживания настраивается. Совсем скоро вы сможете проверять статус своих боксов прямо здесь!")
+
+        # ШАГ 4: ВОРОНКА ОПЛАТЫ
+        def ask_amount(message):
             item = message.text
             msg = bot.send_message(message.chat.id, f"Введите сумму к оплате за '{item}' (только цифры):")
-            bot.register_next_step_handler(msg, ask_email, username, item)
+            bot.register_next_step_handler(msg, ask_email, item)
 
-        # ШАГ 4: СПРАШИВАЕМ ПОЧТУ
-        def ask_email(message, username, item):
+        def ask_email(message, item):
             try:
                 amt = float(message.text)
                 msg = bot.send_message(message.chat.id, "И последнее: напишите ваш E-mail для получения чека:")
-                bot.register_next_step_handler(msg, generate_bill, username, item, amt)
+                bot.register_next_step_handler(msg, generate_bill, item, amt)
             except ValueError:
                 bot.send_message(message.chat.id, "❌ Сумма должна быть числом. Начните заново: /start")
 
-        # ШАГ 5: ГЕНЕРИРУЕМ ССЫЛКУ И КНОПКУ
-        def generate_bill(message, username, item, amt):
+        def generate_bill(message, item, amt):
             email = message.text
+            chat_id = message.chat.id
+            username = state["users"].get(chat_id, "Гость")
+
             if "@" not in email:
-                bot.send_message(message.chat.id, "❌ Некорректный E-mail. Начните заново: /start")
+                bot.send_message(chat_id, "❌ Некорректный E-mail. Начните заново: /start")
                 return
 
-            bot.send_message(message.chat.id, "🔄 Генерирую счет...")
+            bot.send_message(chat_id, "🔄 Генерирую счет...")
             
             link, qid = create_payment(amt, item)
             if link and qid:
                 state["active_orders"][qid] = {
-                    "chat_id": message.chat.id,
+                    "chat_id": chat_id,
                     "username": username,
                     "item": item,
                     "amt": amt,
@@ -175,18 +203,17 @@ def start_bot():
                 markup = types.InlineKeyboardMarkup()
                 markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
                 
-                bot.send_message(message.chat.id, 
+                bot.send_message(chat_id, 
                                  f"✅ **Счет готов!**\n\n"
                                  f"👤 Клиент: {username}\n"
                                  f"📦 Заказ: {item}\n"
                                  f"💰 Сумма: {amt} ₽\n\n"
-                                 f"⏳ Оплатите счет в течение 15 минут.", 
+                                 f"⏳ У вас есть ровно 15 минут на оплату.", 
                                  reply_markup=markup, parse_mode="Markdown")
-                add_log(f"Счет на {amt}р выставлен для {username} ({email})")
+                add_log(f"Счет на {amt}р выставлен для {username}")
             else:
-                bot.send_message(message.chat.id, "❌ Ошибка связи с банком. Попробуйте позже.")
+                bot.send_message(chat_id, "❌ Ошибка связи с банком. Попробуйте позже.")
 
-        # ИСПРАВЛЕНО: Убрали лишний non_stop=True
         bot.infinity_polling(timeout=60)
 
     threading.Thread(target=checker_loop, daemon=True).start()
@@ -196,8 +223,8 @@ def start_bot():
 start_bot()
 
 # --- СЕКРЕТНАЯ АДМИНКА (STREAMLIT UI) ---
-st.set_page_config(page_title="Админка бота", layout="centered")
-st.title("🤖 Панель управления")
+st.set_page_config(page_title="Админка hellopinky", layout="centered")
+st.title("🤖 Панель управления hellopinky")
 
 col1, col2 = st.columns(2)
 with col1:
