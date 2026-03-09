@@ -36,7 +36,7 @@ def add_log(msg):
     state["logs"].append(f"[{now}] {msg}")
     if len(state["logs"]) > 50: state["logs"].pop(0)
 
-# --- 3. ЛОГИКА ТАБЛИЦЫ (УЛУЧШЕННЫЙ ПАРСИНГ) ---
+# --- 3. ЛОГИКА ТАБЛИЦЫ ---
 
 @st.cache_data(show_spinner=False)
 def fetch_cached_sheet(url):
@@ -44,6 +44,7 @@ def fetch_cached_sheet(url):
         export_url = url.split("/edit")[0] + "/export?format=xlsx" if "/edit" in url else url
         headers = {'User-Agent': 'Mozilla/5.0'}
         r = requests.get(export_url, headers=headers, timeout=45)
+        if r.status_code != 200: return None
         return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
     except Exception as e:
         add_log(f"Ошибка загрузки таблицы: {e}")
@@ -55,7 +56,10 @@ def get_items_from_sheet(username, target_status):
     if all_sheets is None: return "⚠️ Не удалось загрузить базу данных."
     
     found_results = {}
-    u_clean = username.lower().replace('@', '').strip()
+    # Подготавливаем ник для сравнения (учитываем оба варианта записи)
+    u_input = username.lower().strip()
+    u_no_at = u_input.replace('@', '')
+    u_with_at = f"@{u_no_at}"
 
     for sheet_name, df in all_sheets.items():
         if df.empty: continue
@@ -67,62 +71,72 @@ def get_items_from_sheet(username, target_status):
 
         if not col_status or not col_items: continue
 
-        # Фильтруем по статусу
         mask = df[col_status].astype(str).str.lower().str.contains(target_status.lower().strip())
         df_filtered = df[mask]
 
         for _, row in df_filtered.iterrows():
-            raw_id = str(row[col_id]).replace('.0', '').strip() if col_id else "???"
-            cell_content = str(row[item_col] if item_col in row else "")
+            raw_id = str(row[col_id]).replace('.0', '').strip() if col_id and pd.notna(row[col_id]) else "???"
+            cell_content = str(row[col_items] if col_items in row else "")
             
-            if u_clean not in cell_content.lower():
+            # Проверяем наличие ника в ячейке целиком для скорости
+            if u_no_at not in cell_content.lower():
                 continue
 
-            # Разбиваем ячейку ТОЛЬКО по переносу строки, чтобы сохранить запятые внутри позиций
+            # Разбиваем ячейку по строкам
             lines = cell_content.split('\n')
-            user_items = []
+            user_items_in_row = []
             
             for line in lines:
                 line = line.strip()
                 if not line: continue
                 
-                # Ищем разделитель (любое тире)
+                # Ищем разделитель (тире)
                 dash_match = re.search(r'[-—–]', line)
                 if dash_match:
                     sep = dash_match.group()
                     parts = line.split(sep)
-                    # Владелец всегда последний после тире
-                    owner = parts[-1].lower().replace('@', '').strip()
-                    # Позиции - всё, что ДО тире
-                    label = sep.join(parts[:-1]).strip()
+                    # Владелец — это то, что ПОСЛЕ тире
+                    owner_part = parts[-1].lower().strip()
+                    # Позиция — то, что ДО тире
+                    label_part = sep.join(parts[:-1]).strip()
                     
-                    if u_clean in owner and owner != "":
-                        user_items.append(label)
-                # Если тире нет, но ник упомянут - берем всю строку целиком
-                elif u_clean in line.lower():
-                    user_items.append(line.strip())
+                    # Если после тире ПУСТО — пропускаем
+                    if not owner_part:
+                        continue
+                        
+                    # Если ник совпал (с @ или без)
+                    if u_no_at == owner_part.replace('@', '') or u_with_at == owner_part:
+                        user_items_in_row.append(label_part)
+                
+                # Случай без тире, но ник есть (индивидуальные заказы)
+                elif u_no_at in line.lower():
+                    clean_p = line.lower().replace(u_with_at, "").replace(u_no_at, "").replace('@', '').strip(' ,.()[]')
+                    if clean_p: user_items_in_row.append(clean_p.capitalize())
 
-            if user_items:
+            if user_items_in_row:
                 if raw_id not in found_results: found_results[raw_id] = []
-                found_results[raw_id].extend(user_items)
+                found_results[raw_id].extend(user_items_in_row)
 
     if not found_results: return None
 
-    # --- КРАСИВЫЙ ДИЗАЙН СООБЩЕНИЯ ---
-    reply = f"🌸 <b>Ваши сокровища hellopinky</b> ✨\n"
+    # Оформление ответа
+    reply = f"🌸 <b>Ваши заказы hellopinky</b> ✨\n"
     reply += f"──────────────────\n"
     reply += f"📂 <i>Статус: {target_status.upper()}</i>\n\n"
     
-    sorted_keys = sorted(found_results.keys(), key=lambda x: int(''.join(filter(str.isdigit, str(x))) or 0))
+    try:
+        sorted_keys = sorted(found_results.keys(), key=lambda x: int(''.join(filter(str.isdigit, str(x))) or 0))
+    except:
+        sorted_keys = sorted(found_results.keys())
     
     for r_num in sorted_keys:
-        # Убираем лишние точки и запятые в конце позиций
         items_list = [i.strip(' ,.') for i in found_results[r_num]]
+        # Склеиваем уникальные позиции
         items_str = ", ".join(dict.fromkeys(items_list))
         reply += f"📦 <b>Разбор № {r_num}</b>\n└─ {items_str}\n\n"
     
     reply += f"──────────────────\n"
-    reply += f"💌 <i>По вопросам: @hellopinky_manager</i>"
+    reply += f"💌 <i>Есть вопросы? Пишите @hellopinky_manager</i>"
     return reply
 
 # --- 4. ОПЛАТА И БАНК ---
@@ -139,27 +153,29 @@ def create_payment(amount, description):
         return res.get("payload"), res.get("qrcId")
     except: return None, None
 
-# --- 5. ТЕЛЕГРАМ БОТ (ДИЗАЙН) ---
+# --- 5. ТЕЛЕГРАМ БОТ ---
 @bot.message_handler(commands=['start'])
 def start(message):
     welcome_text = (
-        "🌸 <b>Приветствуем в hellopinky!</b> ✨\n\n"
+        "🌸 <b>Добро пожаловать в hellopinky!</b> ✨\n\n"
         "Я помогу вам найти ваши заказы в наших разборах и быстро их оплатить.\n\n"
-        "📝 Пожалуйста, <b>напишите ваш логин Telegram</b> (без @), под которым вы записаны в таблице:"
+        "📝 Пожалуйста, напишите ваш <b>логин Telegram (с @)</b>, под которым вы записаны в таблице:"
     )
     msg = bot.send_message(message.chat.id, welcome_text, parse_mode="HTML")
     bot.register_next_step_handler(msg, login)
 
 def login(message):
-    user = message.text.strip().replace('@', '')
+    user = message.text.strip()
+    if not user.startswith('@'):
+        user = f"@{user}"
     state["users"][message.chat.id] = user
     show_menu(message.chat.id, user)
 
 def show_menu(chat_id, user):
     menu_text = (
-        f"🎀 <b>Главное меню</b>\n"
+        f"🎀 <b>Личный кабинет</b>\n"
         f"👤 Пользователь: <code>{user}</code>\n\n"
-        f"Выберите действие:"
+        f"Выберите действие ниже:"
     )
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -182,24 +198,24 @@ def handle_query(call):
         st_list = [("🛒 Выкуплен", "st_выкуплен"), ("🇨🇳 Кит адрес", "st_на кит адресе"), ("🚚 Едет в РФ", "st_едет в рф"), ("🇷🇺 В РФ", "st_в рф")]
         for n, c in st_list: kb.add(types.InlineKeyboardButton(n, callback_data=c))
         kb.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back"))
-        bot.edit_message_text("🔍 <b>Что именно отслеживаем?</b>", uid, call.message.message_id, reply_markup=kb, parse_mode="HTML")
+        bot.edit_message_text("🔍 <b>Выберите статус для поиска:</b>", uid, call.message.message_id, reply_markup=kb, parse_mode="HTML")
     
     elif call.data.startswith("st_"):
         status = call.data.split("_")[1]
-        load_msg = bot.send_message(uid, "⏳ <i>Магия в процессе, ищу в таблицах...</i>", parse_mode="HTML")
+        load_msg = bot.send_message(uid, "⏳ <i>Ищу ваши боксы в таблицах...</i>", parse_mode="HTML")
         res = get_items_from_sheet(user, status)
         bot.delete_message(uid, load_msg.message_id)
         if res:
             bot.send_message(uid, res, parse_mode="HTML")
         else:
-            bot.send_message(uid, f"🥺 По статусу <b>«{status}»</b> ничего не найдено.\n\nПроверьте правильность ника или уточните у менеджера.", parse_mode="HTML")
+            bot.send_message(uid, f"🥺 По статусу <b>«{status}»</b> для <b>{user}</b> ничего не найдено.\n\nПроверьте, правильно ли указан ник в /start.", parse_mode="HTML")
 
     elif call.data == "back":
         bot.delete_message(uid, call.message.message_id)
         show_menu(uid, user)
 
     elif call.data == "pay":
-        msg = bot.send_message(uid, "🛍 <b>Что оплачиваем?</b>\n(Например: Разбор №10 или Карточки)")
+        msg = bot.send_message(uid, "🛍 <b>Что вы хотите оплатить?</b>\n(Например: Разбор №21 или Сет)")
         bot.register_next_step_handler(msg, pay_amt)
 
 def pay_amt(message):
@@ -210,10 +226,10 @@ def pay_amt(message):
 def pay_email(message, item):
     try:
         amt = float(message.text.replace(' ', ''))
-        bot.send_message(message.chat.id, "📧 <b>Ваш Email для чека:</b>")
+        bot.send_message(message.chat.id, "📧 <b>Ваш Email для отправки чека:</b>")
         bot.register_next_step_handler(message, pay_final, item, amt)
     except:
-        bot.send_message(message.chat.id, "❌ Нужно ввести число! Начните оплату заново.")
+        bot.send_message(message.chat.id, "❌ Ошибка! Введите число. Попробуйте нажать «Оплатить» еще раз.")
 
 def pay_final(message, item, amt):
     email = message.text.strip()
@@ -225,10 +241,10 @@ def pay_final(message, item, amt):
     
     if link:
         state["active_orders"][qid] = {"chat_id": message.chat.id, "email": email, "item": item, "amt": amt, "time": time.time()}
-        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(f"💳 Оплатить {amt} ₽", url=link))
+        kb = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton(f"💳 Перейти к оплате {amt} ₽", url=link))
         bot.send_message(message.chat.id, f"✅ <b>Счет готов!</b>\n\n📦 {item}\n💰 {amt} ₽", reply_markup=kb, parse_mode="HTML")
     else:
-        bot.send_message(message.chat.id, "❌ Ошибка банка. Напишите @melamories")
+        bot.send_message(message.chat.id, "❌ Ошибка банка. Напишите менеджеру.")
 
 # --- 6. ЗАПУСК ---
 def run_tasks():
@@ -242,7 +258,7 @@ def run_tasks():
                     try:
                         r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers={"Authorization": f"Bearer {MODUL_TOKEN}"}).json()
                         if r.get("status") == "Accepted":
-                            bot.send_message(o["chat_id"], f"🎉 <b>Оплата принята!</b>\n\nЧек отправлен на {o['email']}. Спасибо за заказ в hellopinky! 🌸", parse_mode="HTML")
+                            bot.send_message(o["chat_id"], f"🎉 <b>Оплата прошла успешно!</b>\n\nСпасибо за покупку в hellopinky! 🌸 Чек отправлен на почту.", parse_mode="HTML")
                             del state["active_orders"][qid]
                     except: pass
             time.sleep(10)
@@ -257,11 +273,11 @@ run_tasks()
 
 # --- 7. АДМИНКА ---
 st.set_page_config(page_title="hellopinky Admin", page_icon="🌸")
-st.title("🌸 hellopinky Control")
+st.title("🌸 hellopinky Management")
 if st.button("🗑 ОБНОВИТЬ ДАННЫЕ ИЗ ТАБЛИЦЫ", use_container_width=True):
     fetch_cached_sheet.clear()
-    st.success("Данные успешно синхронизированы!")
+    st.success("Таблица успешно перечитана!")
 
 st.divider()
-st.write("### 📜 Логи системы")
+st.write("### 📜 Системные события")
 st.code("\n".join(reversed(state["logs"])))
