@@ -97,47 +97,62 @@ def fetch_cached_sheet(url):
         return pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
     except: return None
 
-# --- УМНЫЙ ПОИСК (ИСПРАВЛЕННЫЙ) ---
+# --- ГЛАВНАЯ ФУНКЦИЯ: ПОИСК И ВЫЧЛЕНЕНИЕ ПОЗИЦИЙ ---
 def get_items_from_sheet(username, target_status):
     if not SHEET_URL:
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
         all_sheets = fetch_cached_sheet(SHEET_URL)
         if all_sheets is None:
-            return "⚠️ Не удалось получить данные от Google. Попробуйте еще раз."
+            return "⚠️ Не удалось получить данные. Попробуйте сбросить кэш в админке."
         
         reply_lines = []
         items_found = 0
         
+        # Готовим ник для поиска
+        u_clean = username.lower().strip()
+        u_at = u_clean if u_clean.startswith('@') else f"@{u_clean}"
+        u_no_at = u_clean.replace('@', '')
+
         for sheet_name, df in all_sheets.items():
             if df.empty: continue
             
-            # Находим нужные колонки
+            # Ищем нужные колонки
             status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
             item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
             razbor_col = next((c for c in df.columns if 'разбор' in str(c).lower()), None)
             
             if not status_col or not item_col: continue 
                 
-            # Шаг 1: Фильтруем только нужный статус
+            # Фильтруем по статусу
             df_status = df[df[status_col].astype(str).str.lower().str.strip() == target_status.lower()]
-            
             if df_status.empty: continue
                 
-            # Шаг 2: Фильтруем только строки этого пользователя
-            # Ищем юзернейм во всех колонках текущей отфильтрованной таблицы
-            mask_user = df_status.apply(lambda row: username.lower() in row.astype(str).str.lower().str.cat(sep=' '), axis=1)
-            results = df_status[mask_user]
-            
-            for _, row in results.iterrows():
-                items_found += 1
-                item_name = str(row[item_col]).replace('<', '&lt;').replace('>', '&gt;')
+            # Идем по каждой строке со статусом
+            for _, row in df_status.iterrows():
+                cell_text = str(row[item_col])
                 
-                if razbor_col and pd.notna(row[razbor_col]):
-                    razbor_num = str(row[razbor_col]).replace('.0', '').replace('<', '&lt;').replace('>', '&gt;')
-                    reply_lines.append(f"📦 <b>Разбор №{razbor_num}</b>: {item_name}")
-                else:
-                    reply_lines.append(f"📦 {item_name}")
+                # Если ник вообще есть в этой ячейке
+                if u_no_at in cell_text.lower():
+                    # Делим содержимое ячейки на куски по запятой
+                    chunks = cell_text.split(',')
+                    
+                    for chunk in chunks:
+                        # Если конкретно в этом куске есть наш ник
+                        if u_no_at in chunk.lower():
+                            items_found += 1
+                            
+                            # Очищаем текст: убираем ник, @ и лишние пробелы
+                            clean_item = chunk.lower().replace(u_at, "").replace(u_no_at, "").replace('@', '').strip()
+                            # Делаем первую букву заглавной
+                            clean_item = clean_item.capitalize()
+                            
+                            # Добавляем номер разбора, если он есть
+                            if razbor_col and pd.notna(row[razbor_col]):
+                                r_num = str(row[razbor_col]).replace('.0', '')
+                                reply_lines.append(f"📦 <b>Разбор №{r_num}</b>: {clean_item}")
+                            else:
+                                reply_lines.append(f"📦 {clean_item}")
                 
         if items_found == 0:
             return None
@@ -145,8 +160,8 @@ def get_items_from_sheet(username, target_status):
         final_reply = f"🔍 Ваши позиции со статусом <b>«{target_status}»</b>:\n\n" + "\n".join(reply_lines)
         return final_reply
     except Exception as e:
-        add_log(f"Ошибка поиска: {e}")
-        return "⚠️ Произошла ошибка при поиске."
+        add_log(f"Ошибка парсинга: {e}")
+        return "⚠️ Ошибка при чтении таблицы."
 
 # --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
@@ -195,9 +210,9 @@ def handle_buttons(call):
                               text=f"🔍 Выберите статус:", reply_markup=markup, parse_mode="HTML")
     elif call.data.startswith("status_"):
         target_status = call.data.split("_")[1]
-        bot.send_message(chat_id, f"🔄 Ищу позиции со статусом «{target_status}»...")
+        bot.send_message(chat_id, f"🔄 Ищу ваши позиции «{target_status}»...")
         res = get_items_from_sheet(username, target_status)
-        bot.send_message(chat_id, res if res else f"Позиций со статусом «{target_status}» не найдено. 🥺", parse_mode="HTML")
+        bot.send_message(chat_id, res if res else f"Позиций со статусом «{target_status}» для вас не найдено. 🥺", parse_mode="HTML")
     elif call.data == "back_to_main":
         welcome_menu_back(call.message, username)
 
@@ -235,7 +250,7 @@ def generate_bill(message, item, amt):
         bot.send_message(message.chat.id, f"✅ <b>Счет готов!</b>\n📦 {item}\n💰 {amt} ₽", reply_markup=markup, parse_mode="HTML")
     else: bot.send_message(message.chat.id, "❌ Ошибка банка.")
 
-# --- ЗАПУСК ФОНОВЫХ ПРОЦЕССОВ ---
+# --- ЗАПУСК ---
 @st.cache_resource
 def start_background_tasks():
     if state["bot_running"]: return True
@@ -254,7 +269,7 @@ def start_background_tasks():
                     else:
                         r = requests.get(f"https://api.modulbank.ru/v1/sbp/qr-codes/{qid}", headers=headers)
                         if r.status_code == 200 and r.json().get("status") == "Accepted":
-                            bot.send_message(order["chat_id"], f"🎉 Оплата получена! Чек на {order['email']}")
+                            bot.send_message(order["chat_id"], f"🎉 Оплата получена!")
                             send_receipt(r.json().get("amount", order["amt"]), order["email"], order["item"])
                             del state["active_orders"][qid]
             except: pass
@@ -272,18 +287,18 @@ def start_background_tasks():
 
 start_background_tasks()
 
-# --- СЕКРЕТНАЯ АДМИНКА ---
-st.set_page_config(page_title="Админка hellopinky", layout="centered")
+# --- АДМИНКА ---
+st.set_page_config(page_title="Админка hellopinky")
 st.title("🤖 Панель hellopinky")
 c1, c2 = st.columns(2)
 with c1:
     st.write("### ⏳ Ждут оплаты:")
     for qid, o in state["active_orders"].items():
-        st.warning(f"👤 {o['username']}\n📦 {o['item']} ({o['amt']}₽)")
+        st.warning(f"👤 {o['username']}\n📦 {o['item']}")
 with c2:
     st.write("### 📜 Логи:")
     st.code("\n".join(reversed(state["logs"])))
     if st.button("🗑 Сбросить кэш таблицы"):
         fetch_cached_sheet.clear()
         add_log("Кэш очищен")
-if st.button("🔄 Обновить панель"): st.rerun()
+if st.button("🔄 Обновить"): st.rerun()
