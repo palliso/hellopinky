@@ -91,42 +91,38 @@ def get_items_from_sheet(username, target_status):
     if not SHEET_URL:
         return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
     try:
-        # Превращаем обычную ссылку в ссылку для скачивания Excel
         export_url = SHEET_URL.split("/edit")[0] + "/export?format=xlsx" if "/edit" in SHEET_URL else SHEET_URL
-        
-        # Скачиваем таблицу
         r = requests.get(export_url)
-        # Читаем ВСЕ листы
         all_sheets = pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
         
-        reply = f"🔍 Вот ваши позиции со статусом **«{target_status}»**:\n\n"
+        # Перевели форматирование в HTML
+        reply = f"🔍 Вот ваши позиции со статусом <b>«{target_status}»</b>:\n\n"
         items_found = 0
         
         for sheet_name, df in all_sheets.items():
             if df.empty: continue
             
-            # Ищем колонки, содержащие слова "статус" и "позиции" (игнорируя регистр)
             status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
             item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
             
             if not status_col or not item_col:
-                continue # На этом листе нет нужных колонок
+                continue 
                 
-            # 1. Фильтруем строки по точному статусу
             status_match = df[status_col].astype(str).str.lower().str.strip() == target_status.lower()
             df_status = df[status_match]
             
             if df_status.empty: continue
                 
-            # 2. Ищем юзернейм ВО ВСЕЙ СТРОКЕ (даже если он спрятан в другой колонке)
-            # Мы склеиваем всю строку в один текст и проверяем, есть ли там логин
             mask_user = df_status.apply(lambda row: username.lower() in row.astype(str).str.lower().str.cat(sep=' '), axis=1)
             results = df_status[mask_user]
             
             for _, row in results.iterrows():
                 items_found += 1
-                item_name = row[item_col]
-                reply += f"📦 {item_name} _(Лист: {sheet_name})_\n"
+                # Очищаем названия от опасных символов HTML
+                item_name = str(row[item_col]).replace('<', '&lt;').replace('>', '&gt;')
+                safe_sheet = str(sheet_name).replace('<', '&lt;').replace('>', '&gt;')
+                
+                reply += f"📦 {item_name} <i>(Лист: {safe_sheet})</i>\n"
                 
         if items_found == 0:
             return None
@@ -195,9 +191,10 @@ def handle_buttons(call):
         result_text = get_items_from_sheet(username, target_status)
         
         if result_text:
-            bot.send_message(chat_id, result_text, parse_mode="Markdown")
+            # ИСПРАВЛЕНО: Перевели выдачу таблицы в HTML
+            bot.send_message(chat_id, result_text, parse_mode="HTML")
         else:
-            bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» для логина **{username}** не найдено. 🥺", parse_mode="Markdown")
+            bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» для логина <b>{username}</b> не найдено. 🥺", parse_mode="HTML")
 
     elif call.data == "back_to_main":
         welcome_text = f"Что будем делать дальше, <b>{username}</b>?"
