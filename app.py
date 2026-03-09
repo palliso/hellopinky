@@ -81,7 +81,7 @@ def send_receipt(amount, email, item_name):
 # --- ФОНОВЫЙ РОБОТ И БОТ ---
 @st.cache_resource
 def start_bot():
-    # ЖЕСТКАЯ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА (ОШИБКА 409)
+    # ЖЕСТКАЯ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА
     if "telegram_bot_running" in sys.modules:
         add_log("⚡ Попытка двойного запуска предотвращена.")
         return True
@@ -186,8 +186,8 @@ def start_bot():
             else:
                 bot.send_message(message.chat.id, "❌ Ошибка связи с банком. Попробуйте позже.")
 
-        # Защита от мелких обрывов связи
-        bot.infinity_polling(non_stop=True, timeout=60)
+        # ИСПРАВЛЕНО: Убрали лишний non_stop=True
+        bot.infinity_polling(timeout=60)
 
     threading.Thread(target=checker_loop, daemon=True).start()
     threading.Thread(target=telegram_loop, daemon=True).start()
