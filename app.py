@@ -1,3 +1,4 @@
+import sys
 import streamlit as st
 import requests
 import time
@@ -6,14 +7,16 @@ import threading
 import telebot
 from telebot import types
 from datetime import datetime
+import pandas as pd
+import io
 
 # --- СЕКРЕТЫ ---
 MODUL_TOKEN = st.secrets.get("MODUL_TOKEN", "")
 CP_ID = st.secrets.get("CP_ID", "")
 CP_SECRET = st.secrets.get("CP_SECRET", "")
 MY_INN = st.secrets.get("MY_INN", "")
-# Токен НОВОГО бота hellopinky
 TG_TOKEN = "8002202165:AAFKdN4bW6Eox1jxRDnJgzjz1Bo9Ny2xX1s" 
+SHEET_URL = st.secrets.get("SHEET_URL", "") 
 
 # --- ГЛОБАЛЬНАЯ БАЗА ДАННЫХ И БОТ ---
 @st.cache_resource
@@ -83,6 +86,56 @@ def send_receipt(amount, email, item_name):
         return res.status_code == 200
     except: return False
 
+# --- УМНЫЙ ПОИСК ПО ВСЕМ ЛИСТАМ GOOGLE ТАБЛИЦЫ ---
+def get_items_from_sheet(username, target_status):
+    if not SHEET_URL:
+        return "⚠️ Ошибка: ссылка на таблицу не настроена в админке."
+    try:
+        # Превращаем обычную ссылку в ссылку для скачивания Excel
+        export_url = SHEET_URL.split("/edit")[0] + "/export?format=xlsx" if "/edit" in SHEET_URL else SHEET_URL
+        
+        # Скачиваем таблицу
+        r = requests.get(export_url)
+        # Читаем ВСЕ листы
+        all_sheets = pd.read_excel(io.BytesIO(r.content), sheet_name=None, engine='openpyxl')
+        
+        reply = f"🔍 Вот ваши позиции со статусом **«{target_status}»**:\n\n"
+        items_found = 0
+        
+        for sheet_name, df in all_sheets.items():
+            if df.empty: continue
+            
+            # Ищем колонки, содержащие слова "статус" и "позиции" (игнорируя регистр)
+            status_col = next((c for c in df.columns if 'статус' in str(c).lower()), None)
+            item_col = next((c for c in df.columns if 'позиции' in str(c).lower()), None)
+            
+            if not status_col or not item_col:
+                continue # На этом листе нет нужных колонок
+                
+            # 1. Фильтруем строки по точному статусу
+            status_match = df[status_col].astype(str).str.lower().str.strip() == target_status.lower()
+            df_status = df[status_match]
+            
+            if df_status.empty: continue
+                
+            # 2. Ищем юзернейм ВО ВСЕЙ СТРОКЕ (даже если он спрятан в другой колонке)
+            # Мы склеиваем всю строку в один текст и проверяем, есть ли там логин
+            mask_user = df_status.apply(lambda row: username.lower() in row.astype(str).str.lower().str.cat(sep=' '), axis=1)
+            results = df_status[mask_user]
+            
+            for _, row in results.iterrows():
+                items_found += 1
+                item_name = row[item_col]
+                reply += f"📦 {item_name} _(Лист: {sheet_name})_\n"
+                
+        if items_found == 0:
+            return None
+            
+        return reply
+    except Exception as e:
+        add_log(f"Ошибка чтения таблицы: {e}")
+        return "⚠️ Произошла ошибка при поиске в базе данных. Проверьте ссылку."
+
 # --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 bot.message_handlers = []
 bot.callback_query_handlers = []
@@ -96,7 +149,6 @@ def send_welcome_menu(message):
     username = message.text
     state["users"][message.chat.id] = username 
     
-    # ИСПРАВЛЕНИЕ: Перешли на HTML, чтобы подчеркивания в никах и логинах не ломали бота
     welcome_text = (
         f"🎉 Авторизация прошла успешно!\n\n"
         f"Добро пожаловать в <b>hellopinky</b> — небольшой и уютный магазинчик с официальными боксами от Kayou! 🌸✨\n\n"
@@ -117,13 +169,43 @@ def send_welcome_menu(message):
 def handle_buttons(call):
     bot.answer_callback_query(call.id) 
     chat_id = call.message.chat.id
+    username = state["users"].get(chat_id, "Гость")
     
     if call.data == "pay":
         msg = bot.send_message(chat_id, "🛍️ Отлично! Что будем оплачивать? (Напишите название бокса или товара)")
         bot.register_next_step_handler(msg, ask_amount)
         
     elif call.data == "track":
-        bot.send_message(chat_id, "🛠 В данный момент функция отслеживания настраивается. Совсем скоро вы сможете проверять статус своих боксов прямо здесь!")
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        btn1 = types.InlineKeyboardButton("🛒 Выкуплен", callback_data="status_выкуплен")
+        btn2 = types.InlineKeyboardButton("🇨🇳 На кит адресе", callback_data="status_на кит адресе")
+        btn3 = types.InlineKeyboardButton("🚚 Едет в РФ", callback_data="status_едет в рф")
+        btn4 = types.InlineKeyboardButton("🇷🇺 В РФ", callback_data="status_в рф")
+        btn_back = types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")
+        markup.add(btn1, btn2, btn3, btn4, btn_back)
+        
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, 
+                              text=f"🔍 Выберите статус, чтобы проверить ваши боксы, <b>{username}</b>:", 
+                              reply_markup=markup, parse_mode="HTML")
+                              
+    elif call.data.startswith("status_"):
+        target_status = call.data.split("_")[1]
+        bot.send_message(chat_id, f"🔄 Ищу информацию по статусу «{target_status}»...")
+        
+        result_text = get_items_from_sheet(username, target_status)
+        
+        if result_text:
+            bot.send_message(chat_id, result_text, parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, f"К сожалению, позиций со статусом «{target_status}» для логина **{username}** не найдено. 🥺", parse_mode="Markdown")
+
+    elif call.data == "back_to_main":
+        welcome_text = f"Что будем делать дальше, <b>{username}</b>?"
+        markup = types.InlineKeyboardMarkup()
+        btn_track = types.InlineKeyboardButton("📦 Отследить", callback_data="track")
+        btn_pay = types.InlineKeyboardButton("💳 Оплатить", callback_data="pay")
+        markup.add(btn_track, btn_pay)
+        bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=welcome_text, reply_markup=markup, parse_mode="HTML")
 
 def ask_amount(message):
     item = message.text
@@ -163,7 +245,6 @@ def generate_bill(message, item, amt):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton(text=f"💳 Оплатить {amt} ₽", url=link))
         
-        # ИСПРАВЛЕНИЕ: И здесь тоже используем HTML
         bot.send_message(chat_id, 
                          f"✅ <b>Счет готов!</b>\n\n"
                          f"👤 Клиент: {username}\n"
@@ -227,7 +308,7 @@ def start_background_tasks():
 
 start_background_tasks()
 
-# --- СЕКРЕТНАЯ АДМИНКА (STREAMLIT UI) ---
+# --- СЕКРЕТНАЯ АДМИНКА ---
 st.set_page_config(page_title="Админка hellopinky", layout="centered")
 st.title("🤖 Панель управления hellopinky")
 
