@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>hellopinky pay — оплата заказа</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@600;700&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="app-wrapper">
+    <header class="brand-header">
+      <div class="brand-logo">hp</div>
+      <h1>hellopinky pay</h1>
+    </header>
+
+    <main class="pay-card">
+      <form id="paymentForm" onsubmit="handlePayment(event)">
+        <div class="form-group">
+          <label for="itemInput">Ваши позиции</label>
+          <input type="text" id="itemInput" class="form-control" placeholder="Например: Заказ в магазине hellopinky" required />
+        </div>
+
+        <div class="form-group">
+          <label for="amountInput">Сумма (₽)</label>
+          <input type="number" id="amountInput" class="form-control" value="0" min="1" step="1" oninput="updateTotal()" required />
+        </div>
+
+        <div class="form-group">
+          <label for="emailInput">E-mail для чека</label>
+          <input type="email" id="emailInput" class="form-control" placeholder="client@hellopinky.ru" required />
+        </div>
+
+        <div class="total-box">
+          <span class="total-box-label">Итого по чеку:</span>
+          <span class="total-box-amount" id="totalAmountDisplay">0 ₽</span>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="submitBtn">
+          ПЕРЕЙТИ К ОПЛАТЕ
+        </button>
+      </form>
+    </main>
+  </div>
+
+  <div class="toast" id="toastBox"></div>
+  <script src="script.js"></script>
+</body>
+</html>
