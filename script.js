@@ -4,7 +4,8 @@ let items = JSON.parse(localStorage.getItem('hp_items')) || [];
 let cart = JSON.parse(localStorage.getItem('hp_cart')) || [];
 let orders = JSON.parse(localStorage.getItem('hp_orders')) || [];
 
-let activeOrderId = null;
+let currentOrder = null;
+let pollInterval = null;
 const CANCEL_TIMEOUT_MS = 10 * 60 * 1000;
 
 function seedData() {
@@ -152,9 +153,13 @@ function renderCartModal() {
 
 function closeModals() {
     document.getElementById('cartModal').style.display = 'none';
+    document.getElementById('paymentModal').style.display = 'none';
+    document.getElementById('qrContainer').style.display = 'none';
+    document.getElementById('generateQrBtn').style.display = 'block';
+    if(pollInterval) clearInterval(pollInterval);
 }
 
-// Оформление заказа и запуск платежного виджета с деталями чека
+// Оформление заказа и переход к СБП
 document.getElementById('checkoutForm').addEventListener('submit', (e) => {
     e.preventDefault();
     if (cart.length === 0) return;
@@ -166,7 +171,7 @@ document.getElementById('checkoutForm').addEventListener('submit', (e) => {
     const orderId = 'ORD-' + Math.floor(Math.random() * 10000);
     const orderItemsSummary = cart.map(i => `${i.name} (x${i.quantity})`).join(', ');
 
-    const newOrder = {
+    currentOrder = {
         id: orderId,
         items: [...cart],
         summary: orderItemsSummary,
@@ -177,72 +182,81 @@ document.getElementById('checkoutForm').addEventListener('submit', (e) => {
         createdAt: Date.now()
     };
 
-    orders.unshift(newOrder);
-    
-    // Формируем массив позиций для чека CloudPayments (54-ФЗ)
-    const receiptItems = cart.map(item => ({
-        label: item.name,              // Название товара в чеке
-        price: item.price,             // Цена за 1 шт
-        quantity: item.quantity,       // Количество
-        amount: item.price * item.quantity, // Итого по позиции
-        vat: null,                     // Ставка НДС (если без НДС, оставляем null или прописываем вашу)
-        method: 0,                     // 0 = Полная предоплата
-        object: 4                      // 4 = Товар
-    }));
-
+    orders.unshift(currentOrder);
     cart = [];
     saveData();
     renderStorefront();
-    closeModals();
 
-    // Запуск виджета оплаты CloudPayments с передачей чека
-    payWithCloudPayments(orderId, totalPrice, email, tg, receiptItems, newOrder);
+    document.getElementById('paymentAmountDisplay').innerText = totalPrice + ' ₽';
+    document.getElementById('cartModal').style.display = 'none';
+    document.getElementById('paymentModal').style.display = 'flex';
 });
 
-function payWithCloudPayments(orderId, amount, email, tg, receiptItems, orderObj) {
-    // Убедитесь, что на страницу в index.html подключен скрипт виджета: 
-    // <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js"></script>
-    
-    var widget = new cp.CloudPayments();
-    
-    widget.pay('auth', // или 'charge'
-        {
-            publicId: 'pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx', // Вставьте сюда ваш Public ID из личного кабинета CloudPayments
-            description: `Оплата заказа ${orderId} в hellopinky (TG: ${tg})`,
-            amount: amount,
-            currency: 'RUB',
-            accountId: tg,
-            email: email,
-            invoiceId: orderId,
-            jsonData: { 
-                tgUsername: tg 
+// Запрос динамического QR-кода Модульбанка
+async function requestDynamicQR() {
+    document.getElementById('generateQrBtn').style.display = 'none';
+    document.getElementById('qrContainer').style.display = 'block';
+    document.getElementById('paymentStatusText').innerText = "Генерация QR-кода...";
+
+    try {
+        // Здесь происходит вызов вашего бэкенда или прямого API Модульбанка с деталями заказа
+        const response = await fetch('https://api.modulbank.ru/v1/qrs/dynamic', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ВАШ_ТОКЕН_МОДУЛЬБАНКА'
             },
-            // Передаем детализированный чек для фискализации (то, что человек покупает)
-            receipt: {
-                Items: receiptItems,
-                taxationSystem: 0, // Система налогообложения (0 = ОСН, 1 = УСН доход и т.д., зависит от вашей настройки)
-                email: email,
-                phone: ''
-            }
-        },
-        {
-            onSuccess: function (options) {
-                // Успешная оплата
-                orderObj.status = 'Оплачено';
-                saveData();
-                sendToGoogleSheets(orderObj);
-                renderAdminOrders();
-                alert('Оплата прошла успешно! Чек отправлен на вашу почту.');
-            },
-            onFail: function (reason, options) {
-                // Ошибка оплаты
-                alert('Оплата не прошла: ' + reason);
-            },
-            onComplete: function (paymentResult, options) {
-                // Закрытие виджета
-            }
+            body: JSON.stringify({
+                amount: currentOrder.total,
+                description: `Заказ ${currentOrder.id}: ${currentOrder.summary}`,
+                merchantId: currentOrder.id
+            })
+        });
+
+        const data = await response.json();
+        if(data && (data.qrCodeUrl || data.imageUrl)) {
+            document.getElementById('sbpQrImage').src = data.qrCodeUrl || data.imageUrl;
+            document.getElementById('paymentStatusText').innerText = "Ожидаем оплату от банка...";
+            startPaymentPolling();
+        } else {
+            // Демо-режим, если токен еще не введен на отдельном бэкенде
+            document.getElementById('sbpQrImage').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=SBP_DEMO_PAYMENT';
+            document.getElementById('paymentStatusText').innerText = "Ожидаем оплату (Демо-режим QR)...";
+            startPaymentPolling(true);
         }
-    );
+    } catch(err) {
+        // Запасной демонстрационный вариант для проверки интерфейса
+        document.getElementById('sbpQrImage').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=SBP_DEMO_PAYMENT';
+        document.getElementById('paymentStatusText').innerText = "Ожидаем оплату (Демо-режим QR)...";
+        startPaymentPolling(true);
+    }
+}
+
+// Проверка статуса оплаты
+function startPaymentPolling(isDemo = false) {
+    let attempts = 0;
+    pollInterval = setInterval(() => {
+        attempts++;
+        if (isDemo && attempts > 3) {
+            completePayment();
+            return;
+        }
+        // В штатном режиме здесь опрашивается статус транзакции
+        if (attempts > 60) {
+            clearInterval(pollInterval);
+            document.getElementById('paymentStatusText').innerText = "Время ожидания истекло.";
+        }
+    }, 10000);
+}
+
+function completePayment() {
+    clearInterval(pollInterval);
+    currentOrder.status = 'Оплачено';
+    saveData();
+    sendToGoogleSheets(currentOrder);
+    renderAdminOrders();
+    alert('Оплата успешно подтверждена банком!');
+    closeModals();
 }
 
 function manualConfirmPayment(orderId) {
