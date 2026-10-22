@@ -20,7 +20,7 @@ const REDIRECT_URL = "https://hellopinky.ru";
 
 // Конфигурация торговых точек для разных вкладок
 const RETAIL_POINTS = {
-    main: "a828d71d-f5b5-4959-a605-d9a0192d8416", // <--- ВСТАВЬТЕ СЮДА ID ВАШЕЙ ОСНОВНОЙ ТОЧКИ (ИЗ БРАУЗЕРА)
+    main: "a828d71d-f5b5-4959-a605-d9a0192d8416", 
     preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
 };
 
