@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hellopinky | Store</title>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <a href="#" class="logo" onclick="toggleAdmin(false)">
+            hellopinky<span>.</span>
+        </a>
+        <div class="header-actions">
+            <button class="cart-btn" onclick="openCartModal()">
+                🛒 Корзина <span id="cartCount" style="background:white; color:var(--text-dark); padding:2px 6px; border-radius:10px; font-size:0.8rem;">0</span>
+            </button>
+            <button class="admin-btn" onclick="toggleAdmin(true)">Admin</button>
+        </div>
+    </header>
+
+    <main id="storefront">
+        <h2 class="section-title">В наличии</h2>
+        <div class="grid" id="inStockGrid"></div>
+
+        <h2 class="section-title">Предзаказ</h2>
+        <div class="grid" id="preOrderGrid"></div>
+    </main>
+
+    <main id="adminPanel" class="admin-panel">
+        <h2 class="section-title">Панель управления</h2>
+        <div class="admin-layout">
+            <div class="admin-card">
+                <h3>Добавить товар</h3>
+                <form id="addItemForm" style="margin-top: 1.5rem;">
+                    <div class="form-group">
+                        <label>Название</label>
+                        <input type="text" id="itemName" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Тип товара</label>
+                        <select id="itemType" class="form-control" required>
+                            <option value="instock">В наличии</option>
+                            <option value="preorder">Предзаказ</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Описание</label>
+                        <input type="text" id="itemDesc" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Цена (₽)</label>
+                        <input type="number" id="itemPrice" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Количество (шт.)</label>
+                        <input type="number" id="itemStock" class="form-control" required min="0">
+                    </div>
+                    <div class="form-group">
+                        <label>Ссылка на фото</label>
+                        <input type="url" id="itemImg" class="form-control" required>
+                    </div>
+                    <button type="submit" class="btn btn-full">Добавить</button>
+                </form>
+            </div>
+
+            <div>
+                <div class="admin-card" style="margin-bottom: 2rem;">
+                    <h3>Товары на витрине</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Название</th>
+                                    <th>Тип</th>
+                                    <th>Цена</th>
+                                    <th>Остаток</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adminItemsList"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="admin-card">
+                    <h3>Заказы</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Состав</th>
+                                    <th>TG / Почта</th>
+                                    <th>Сумма</th>
+                                    <th>Статус</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adminOrdersList"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Модалка Корзины -->
+    <div class="modal-overlay" id="cartModal">
+        <div class="modal">
+            <h3 class="modal-title">Ваша корзина</h3>
+            <div id="cartItemsContainer" style="max-height: 200px; overflow-y: auto; margin-bottom: 1rem;"></div>
+            
+            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 1.1rem; margin-bottom: 1.5rem; border-top: 2px solid var(--border); padding-top: 1rem;">
+                <span>Итого:</span>
+                <span id="cartTotalPrice" style="color: var(--primary-dark);">0 ₽</span>
+            </div>
+
+            <form id="checkoutForm">
+                <div class="form-group">
+                    <label>Telegram username (@username)</label>
+                    <input type="text" id="customerTg" class="form-control" placeholder="@username" required>
+                </div>
+                <div class="form-group">
+                    <label>Электронная почта (для чека)</label>
+                    <input type="email" id="customerEmail" class="form-control" placeholder="mail@example.com" required>
+                </div>
+                <button type="submit" class="btn btn-full" id="checkoutBtn">Перейти к оплате</button>
+                <button type="button" class="close-modal" onclick="closeModals()">Продолжить покупки</button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Форма ЮMoney -->
+    <div class="modal-overlay" id="paymentModal">
+        <div class="modal" style="text-align: center;">
+            <h3 class="modal-title">Готово к оплате</h3>
+            <p style="font-size: 0.95rem; margin-bottom: 0.5rem;">Сумма к оплате: <b id="paymentAmountDisplay">0 ₽</b></p>
+            <p style="font-size: 0.8rem; color: var(--text-light); margin-bottom: 1.5rem;">Заказ забронирован на 10 минут.</p>
+            
+            <form method="POST" action="https://yoomoney.ru/quickpay/confirm.xml" id="realYooMoneyForm" onsubmit="handlePaymentRedirect()">
+                <!-- ЗАМЕНИТЕ НА НОМЕР СВОЕГО КОШЕЛЬКА ЮMONEY -->
+                <input type="hidden" name="receiver" value="410010000000000">
+                <input type="hidden" name="quickpay-form" value="shop">
+                <input type="hidden" name="targets" id="ymTargets" value="Заказ в hellopinky">
+                <input type="hidden" name="paymentType" value="AC">
+                <input type="hidden" name="sum" id="ymSum" value="0" data-type="number">
+                <input type="hidden" name="label" id="ymLabel" value="">
+                
+                <button type="submit" class="real-pay-button">
+                    💳 Оплатить картой или через СБП
+                </button>
+            </form>
+            
+            <button type="button" class="close-modal" onclick="closeModals()" style="margin-top: 1.5rem;">Отмена</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
