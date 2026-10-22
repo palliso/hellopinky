@@ -257,8 +257,8 @@ main {
     margin-top: 1rem;
 }
 
-.real-pay-button {
-    background-color: #8a2be2;
+.sbp-button {
+    background-color: #000;
     color: #fff;
     display: flex;
     align-items: center;
@@ -271,10 +271,10 @@ main {
     font-weight: 600;
     cursor: pointer;
     font-size: 1rem;
-    margin-top: 1.5rem;
+    margin-top: 1rem;
     transition: opacity 0.2s;
 }
-.real-pay-button:hover { opacity: 0.8; }
+.sbp-button:hover { opacity: 0.8; }
 
 .cart-item-row {
     display: flex;
