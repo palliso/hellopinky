@@ -1,140 +1,202 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>hellopinky | Store</title>
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css">
-    <!-- Виджет CloudPayments / CloudKassir для онлайн-оплаты и чеков -->
-    <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>hellopinky pay — оплата заказа и автоматический чек 54-ФЗ</title>
+  <!-- Шрифты Comfortaa и Montserrat -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@600;700&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Подключение стилей -->
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-    <header>
-        <a href="#" class="logo" onclick="toggleAdmin(false)">
-            hellopinky<span>.</span>
-        </a>
-        <div class="header-actions">
-            <button class="cart-btn" onclick="openCartModal()">
-                🛒 Корзина <span id="cartCount" style="background:white; color:var(--text-dark); padding:2px 6px; border-radius:10px; font-size:0.8rem;">0</span>
-            </button>
-            <button class="admin-btn" onclick="toggleAdmin(true)">Admin</button>
-        </div>
+  <div class="app-wrapper">
+    <!-- Шапка бренда -->
+    <header class="brand-header">
+      <div class="brand-logo">hp</div>
+      <h1>hellopinky pay</h1>
+      <p>быстрая оплата заказа • автоматический чек 54-ФЗ на почту</p>
     </header>
 
-    <main id="storefront">
-        <h2 class="section-title">В наличии</h2>
-        <div class="grid" id="inStockGrid"></div>
+    <!-- Переключатель вкладок (скрывается для клиента по ссылке ?client=1) -->
+    <nav class="mode-switcher" id="modeSwitcher">
+      <button class="mode-btn active" onclick="switchTab('pay', this)">💳 Форма оплаты</button>
+      <button class="mode-btn" onclick="switchTab('link', this)">🔗 Ссылка клиенту</button>
+      <button class="mode-btn" onclick="switchTab('history', this)">🧾 Чеки (<span id="receiptsCount">0</span>)</button>
+      <button class="mode-btn" onclick="switchTab('settings', this)">⚙️ Касса и Робот</button>
+    </nav>
 
-        <h2 class="section-title">Предзаказ</h2>
-        <div class="grid" id="preOrderGrid"></div>
-    </main>
+    <!-- Основная карточка -->
+    <main class="pay-card">
 
-    <main id="adminPanel" class="admin-panel">
-        <h2 class="section-title">Панель управления</h2>
-        <div class="admin-layout">
-            <div class="admin-card">
-                <h3>Добавить товар</h3>
-                <form id="addItemForm" style="margin-top: 1.5rem;">
-                    <div class="form-group">
-                        <label>Название</label>
-                        <input type="text" id="itemName" class="form-control" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Тип товара</label>
-                        <select id="itemType" class="form-control" required>
-                            <option value="instock">В наличии</option>
-                            <option value="preorder">Предзаказ</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Описание</label>
-                        <input type="text" id="itemDesc" class="form-control" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Цена (₽)</label>
-                        <input type="number" id="itemPrice" class="form-control" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Количество (шт.)</label>
-                        <input type="number" id="itemStock" class="form-control" required min="0">
-                    </div>
-                    <div class="form-group">
-                        <label>Ссылка на фото</label>
-                        <input type="url" id="itemImg" class="form-control" required>
-                    </div>
-                    <button type="submit" class="btn btn-full">Добавить</button>
-                </form>
-            </div>
-
-            <div>
-                <div class="admin-card" style="margin-bottom: 2rem;">
-                    <h3>Товары на витрине</h3>
-                    <div style="overflow-x: auto;">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>Название</th>
-                                    <th>Тип</th>
-                                    <th>Цена</th>
-                                    <th>Остаток</th>
-                                    <th>Действие</th>
-                                </tr>
-                            </thead>
-                            <tbody id="adminItemsList"></tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="admin-card">
-                    <h3>Заказы</h3>
-                    <div style="overflow-x: auto;">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Состав</th>
-                                    <th>TG / Почта</th>
-                                    <th>Сумма</th>
-                                    <th>Статус</th>
-                                    <th>Действие</th>
-                                </tr>
-                            </thead>
-                            <tbody id="adminOrdersList"></tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
+      <!-- ВКЛАДКА 1: ФОРМА ОПЛАТЫ (3 поля как на скрине + дизайн hellopinky) -->
+      <section id="tab-pay" class="tab-pane active">
+        <div class="section-title">
+          <span>Оформление оплаты</span>
+          <span class="badge-54fz">CloudKassir 54-ФЗ</span>
         </div>
-    </main>
 
-    <!-- Модалка Корзины -->
-    <div class="modal-overlay" id="cartModal">
-        <div class="modal">
-            <h3 class="modal-title">Ваша корзина</h3>
-            <div id="cartItemsContainer" style="max-height: 200px; overflow-y: auto; margin-bottom: 1rem;"></div>
-            
-            <div style="display: flex; justify-content: space-between; font-weight: 700; font-size: 1.1rem; margin-bottom: 1.5rem; border-top: 2px solid var(--border); padding-top: 1rem;">
-                <span>Итого:</span>
-                <span id="cartTotalPrice" style="color: var(--primary-dark);">0 ₽</span>
+        <form id="paymentForm" onsubmit="handleCreatePayment(event)">
+          <!-- Поле 1: Ваши позиции -->
+          <div class="form-group">
+            <label for="itemDescInput">Ваши позиции</label>
+            <input
+              type="text"
+              id="itemDescInput"
+              class="form-control"
+              placeholder="Например: Заказ в магазине hellopinky"
+              oninput="updateTotalAndPreview()"
+              required
+            />
+          </div>
+
+          <!-- Поле 2: Сумма (₽) с кнопками - и + -->
+          <div class="form-group">
+            <label for="amountInput">Сумма (₽)</label>
+            <div class="number-wrapper">
+              <input
+                type="number"
+                id="amountInput"
+                class="form-control"
+                value="0"
+                min="1"
+                step="1"
+                oninput="updateTotalAndPreview()"
+                required
+              />
+              <div class="step-buttons">
+                <button type="button" class="step-btn" onclick="changeAmount(-100)" title="Уменьшить">−</button>
+                <button type="button" class="step-btn" onclick="changeAmount(100)" title="Увеличить">+</button>
+              </div>
             </div>
+          </div>
 
-            <form id="checkoutForm">
-                <div class="form-group">
-                    <label>Telegram username (@username)</label>
-                    <input type="text" id="customerTg" class="form-control" placeholder="@username" required>
-                </div>
-                <div class="form-group">
-                    <label>Электронная почта (для отправки чека)</label>
-                    <input type="email" id="customerEmail" class="form-control" placeholder="mail@example.com" required>
-                </div>
-                <button type="submit" class="btn btn-full" id="checkoutBtn">Оплатить и получить чек</button>
-                <button type="button" class="close-modal" onclick="closeModals()">Продолжить покупки</button>
-            </form>
+          <!-- Поле 3: E-mail для чека -->
+          <div class="form-group">
+            <label for="emailInput">E-mail для чека</label>
+            <input
+              type="email"
+              id="emailInput"
+              class="form-control"
+              placeholder="client@hellopinky.ru"
+              oninput="updateTotalAndPreview()"
+              required
+            />
+          </div>
+
+          <!-- Итого по чеку -->
+          <div class="total-box">
+            <span class="total-box-label">Итого по чеку:</span>
+            <span class="total-box-amount" id="totalAmountDisplay">0 ₽</span>
+          </div>
+
+          <!-- Главная кнопка -->
+          <button type="submit" class="btn btn-primary">
+            ПЕРЕЙТИ К ОПЛАТЕ
+          </button>
+        </form>
+
+        <!-- Блок созданного СБП-счёта (появляется после нажатия "Перейти к оплате") -->
+        <div id="sbpPaymentBlock" class="sbp-box" style="display: none;">
+          <div class="sbp-status-title">✅ Счёт СБП сформирован! Ожидание оплаты роботом...</div>
+          <div class="sbp-sub" id="sbpOrderDetails"></div>
+          <a id="sbpPayLink" href="#" target="_blank" class="btn btn-sbp">
+            🔥 ОПЛАТИТЬ ПО СБП
+          </a>
+          <button type="button" class="btn btn-outline" style="margin-top: 8px;" onclick="simulateBankAccepted()">
+            ✨ Тест для GitHub: Симулировать статус «Accepted» от банка
+          </button>
         </div>
-    </div>
 
-    <script src="script.js"></script>
+        <!-- Кнопки проверки для GitHub Pages -->
+        <div class="test-actions">
+          <button type="button" class="btn btn-outline" onclick="toggleJsonPreview()">
+            🔍 Проверить JSON чека 54-ФЗ
+          </button>
+          <button type="button" class="btn btn-outline" onclick="quickDemoFill()">
+            🌸 Заполнить демо-данными
+          </button>
+        </div>
+
+        <pre class="json-preview" id="jsonPreviewBox"></pre>
+      </section>
+
+      <!-- ВКЛАДКА 2: ГЕНЕРАТОР ССЫЛКИ КЛИЕНТУ -->
+      <section id="tab-link" class="tab-pane">
+        <div class="section-title">
+          <span>Ссылка на оплату для покупателя</span>
+          <span class="badge-54fz">GitHub Pages</span>
+        </div>
+        <p class="helper-text">
+          Заполни «Ваши позиции» и «Сумму» во вкладке <b>Форма оплаты</b> — ссылка ниже сгенерируется автоматически. У покупателя откроется чистая форма без лишних вкладок.
+        </p>
+
+        <div class="form-group">
+          <label for="generatedLinkInput">Готовая ссылка для отправки в ЛС</label>
+          <input type="text" id="generatedLinkInput" class="form-control" readonly onclick="this.select()" />
+        </div>
+
+        <button type="button" class="btn btn-primary" onclick="copyClientLink()">
+          📋 Скопировать ссылку клиенту
+        </button>
+      </section>
+
+      <!-- ВКЛАДКА 3: ПРОБИТЫЕ ЧЕКИ -->
+      <section id="tab-history" class="tab-pane">
+        <div class="section-title">
+          <span>Отправленные чеки CloudKassir</span>
+          <button type="button" class="btn btn-outline btn-sm" onclick="clearHistory()">Очистить</button>
+        </div>
+        <div class="history-list" id="receiptsHistoryList"></div>
+      </section>
+
+      <!-- ВКЛАДКА 4: НАСТРОЙКИ КАССЫ И ЛОГИ РОБОТА -->
+      <section id="tab-settings" class="tab-pane">
+        <div class="section-title">
+          <span>Параметры 54-ФЗ и Логи робота</span>
+          <span class="badge-54fz" id="waitingCounterBadge">В очереди: 0</span>
+        </div>
+
+        <div class="form-group">
+          <label for="cfgInn">ИНН (MY_INN в чеке CloudKassir)</label>
+          <input type="text" id="cfgInn" class="form-control" value="667100000000" oninput="saveSettings()" />
+        </div>
+
+        <div class="grid-2">
+          <div class="form-group">
+            <label for="cfgTax">Система налогообложения</label>
+            <select id="cfgTax" class="form-control" onchange="saveSettings()">
+              <option value="1">1 — УСН Доход (6%)</option>
+              <option value="2">2 — УСН Доход-Расход</option>
+              <option value="0">0 — ОСН</option>
+              <option value="5">5 — Патент</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="cfgMethod">Признак способа расчёта</label>
+            <select id="cfgMethod" class="form-control" onchange="saveSettings()">
+              <option value="1">1 — Предоплата 100%</option>
+              <option value="4">4 — Полный расчёт</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="robotLogsArea">Логи робота (проверка очереди СБП → отправка чека)</label>
+          <textarea id="robotLogsArea" class="form-control logs-area" rows="6" readonly></textarea>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- Всплывающее уведомление -->
+  <div class="toast" id="toastBox"></div>
+
+  <!-- Подключение логики -->
+  <script src="script.js"></script>
 </body>
 </html>
