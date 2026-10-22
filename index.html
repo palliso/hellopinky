@@ -6,7 +6,6 @@
     <title>hellopinky | Store</title>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
-    <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js"></script>
 </head>
 <body>
 
@@ -128,34 +127,28 @@
                     <label>Электронная почта (для чека)</label>
                     <input type="email" id="customerEmail" class="form-control" placeholder="mail@example.com" required>
                 </div>
-                <button type="submit" class="btn btn-full" id="checkoutBtn">Перейти к оплате</button>
+                <button type="submit" class="btn btn-full" id="checkoutBtn">Оплатить через СБП</button>
                 <button type="button" class="close-modal" onclick="closeModals()">Продолжить покупки</button>
             </form>
         </div>
     </div>
     
-    <!-- Форма ЮMoney -->
+    <!-- Модалка СБП / QR-код Модульбанка -->
     <div class="modal-overlay" id="paymentModal">
         <div class="modal" style="text-align: center;">
-            <h3 class="modal-title">Готово к оплате</h3>
+            <h3 class="modal-title">Оплата СБП</h3>
             <p style="font-size: 0.95rem; margin-bottom: 0.5rem;">Сумма к оплате: <b id="paymentAmountDisplay">0 ₽</b></p>
-            <p style="font-size: 0.8rem; color: var(--text-light); margin-bottom: 1.5rem;">Заказ забронирован на 10 минут.</p>
+            <p style="font-size: 0.8rem; color: var(--text-light); margin-bottom: 1rem;">Заказ забронирован на 10 минут.</p>
             
-            <form method="POST" action="https://yoomoney.ru/quickpay/confirm.xml" id="realYooMoneyForm" onsubmit="handlePaymentRedirect()">
-                <!-- ЗАМЕНИТЕ НА НОМЕР СВОЕГО КОШЕЛЬКА ЮMONEY -->
-                <input type="hidden" name="receiver" value="410010000000000">
-                <input type="hidden" name="quickpay-form" value="shop">
-                <input type="hidden" name="targets" id="ymTargets" value="Заказ в hellopinky">
-                <input type="hidden" name="paymentType" value="AC">
-                <input type="hidden" name="sum" id="ymSum" value="0" data-type="number">
-                <input type="hidden" name="label" id="ymLabel" value="">
-                
-                <button type="submit" class="real-pay-button">
-                    💳 Оплатить картой или через СБП
-                </button>
-            </form>
+            <button class="sbp-button" id="generateQrBtn" onclick="requestDynamicQR()">Сгенерировать QR-код банка</button>
+
+            <div class="qr-container" id="qrContainer" style="display:none; margin: 1.5rem 0; padding: 1rem; background: #fff; border-radius: 12px; border: 2px dashed var(--primary);">
+                <p style="font-size: 0.85rem; color: #7a7a7a; margin-bottom: 10px;">Отсканируйте код в приложении банка:</p>
+                <img id="sbpQrImage" src="" alt="QR Code" style="max-width: 200px; margin: 0 auto; display: block;">
+                <p class="qr-status" id="paymentStatusText" style="font-size: 0.9rem; margin-top: 1rem; color: var(--warning); font-weight: 600;">Ожидаем оплату...</p>
+            </div>
             
-            <button type="button" class="close-modal" onclick="closeModals()" style="margin-top: 1.5rem;">Отмена</button>
+            <button type="button" class="close-modal" onclick="closeModals()" style="margin-top: 1.5rem;">Закрыть</button>
         </div>
     </div>
 
