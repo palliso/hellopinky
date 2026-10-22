@@ -1,339 +1,301 @@
-const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/ВАШ_ДЛИННЫЙ_КОД/exec';
+// Состояние приложения (сохраняется в localStorage для удобного теста на GitHub Pages)
+const state = {
+  waiting: JSON.parse(localStorage.getItem('hp_waiting') || '{}'),
+  receipts: JSON.parse(localStorage.getItem('hp_receipts') || '[]'),
+  logs: JSON.parse(localStorage.getItem('hp_logs') || '[]'),
+  lastQrcId: null
+};
 
-let items = JSON.parse(localStorage.getItem('hp_items')) || [];
-let cart = JSON.parse(localStorage.getItem('hp_cart')) || [];
-let orders = JSON.parse(localStorage.getItem('hp_orders')) || [];
-
-let activeOrderObj = null;
-const CANCEL_TIMEOUT_MS = 10 * 60 * 1000; // 10 минут брони
-
-function seedData() {
-    if (items.length === 0) {
-        items = [
-            { id: 1, type: 'instock', name: 'Протекторы My Little Pony (100 шт)', desc: 'Плотные голографические протекторы для SSR карточек.', price: 350, stock: 15, img: 'https://images.unsplash.com/photo-1618331835717-801e976710b2?auto=format&fit=crop&q=80&w=400' },
-            { id: 2, type: 'preorder', name: 'Blind Box: Midnight Nursery Rhymes', desc: 'Оригинальный слепой бокс с фигурками BJD.', price: 1800, stock: 5, img: 'https://images.unsplash.com/photo-1593452586716-4171a82f8016?auto=format&fit=crop&q=80&w=400' }
-        ];
-        saveData();
-    }
+// Добавление записи в лог робота
+function addLog(msg) {
+  const now = new Date().toLocaleTimeString('ru-RU');
+  state.logs.push(`[${now}] ${msg}`);
+  if (state.logs.length > 30) state.logs.shift();
+  localStorage.setItem('hp_logs', JSON.stringify(state.logs));
+  renderLogs();
 }
 
-function saveData() {
-    localStorage.setItem('hp_items', JSON.stringify(items));
-    localStorage.setItem('hp_cart', JSON.stringify(cart));
-    localStorage.setItem('hp_orders', JSON.stringify(orders));
+function saveState() {
+  localStorage.setItem('hp_waiting', JSON.stringify(state.waiting));
+  localStorage.setItem('hp_receipts', JSON.stringify(state.receipts));
+  updateCounters();
 }
 
-// Автоотмена неоплаченных броней через 10 минут
-function checkExpiredOrders() {
-    let changed = false;
-    const now = Date.now();
-    orders.forEach(order => {
-        if (order.status === 'Ожидает оплаты' && (now - order.createdAt > CANCEL_TIMEOUT_MS)) {
-            order.status = 'Отменен';
-            order.items.forEach(orderedItem => {
-                const item = items.find(i => i.id === orderedItem.id);
-                if (item) item.stock += orderedItem.quantity;
-            });
-            changed = true;
-        }
-    });
-    if (changed) { saveData(); renderStorefront(); renderAdminOrders(); }
-}
-setInterval(checkExpiredOrders, 30000);
-
-function toggleAdmin(show) {
-    document.getElementById('storefront').style.display = show ? 'none' : 'block';
-    document.getElementById('adminPanel').style.display = show ? 'block' : 'none';
-    if(show) { renderAdminItems(); renderAdminOrders(); } else { renderStorefront(); }
+// Загрузка и сохранение настроек кассы
+function loadSettings() {
+  const cfg = JSON.parse(localStorage.getItem('hp_settings') || '{}');
+  if (cfg.inn) document.getElementById('cfgInn').value = cfg.inn;
+  if (cfg.tax) document.getElementById('cfgTax').value = cfg.tax;
+  if (cfg.method) document.getElementById('cfgMethod').value = cfg.method;
 }
 
-function renderStorefront() {
-    const inStockGrid = document.getElementById('inStockGrid');
-    const preOrderGrid = document.getElementById('preOrderGrid');
-    inStockGrid.innerHTML = ''; preOrderGrid.innerHTML = '';
-
-    items.forEach(item => {
-        const isOutOfStock = item.stock <= 0;
-        const badgeClass = item.type === 'instock' ? 'badge in-stock' : 'badge pre-order';
-        const badgeText = item.type === 'instock' ? 'В НАЛИЧИИ' : 'ПРЕДЗАКАЗ';
-        
-        const card = `
-            <div class="card">
-                <img src="${item.img}" alt="${item.name}" class="card-img">
-                <div class="card-content">
-                    <span class="${badgeClass}">${badgeText}</span>
-                    <h3 class="card-title">${item.name}</h3>
-                    <p class="card-desc">${item.desc}</p>
-                    <p class="card-stock ${isOutOfStock ? 'low' : ''}">Осталось: ${item.stock} шт.</p>
-                    <div class="card-footer">
-                        <span class="price">${item.price} ₽</span>
-                        <button class="btn" onclick="addToCart(${item.id})" ${isOutOfStock ? 'disabled' : ''}>${isOutOfStock ? 'Нет в наличии' : 'В корзину'}</button>
-                    </div>
-                </div>
-            </div>
-        `;
-        if (item.type === 'instock') inStockGrid.innerHTML += card;
-        else preOrderGrid.innerHTML += card;
-    });
-    
-    updateCartCount();
+function saveSettings() {
+  const cfg = {
+    inn: document.getElementById('cfgInn').value.trim(),
+    tax: document.getElementById('cfgTax').value,
+    method: document.getElementById('cfgMethod').value
+  };
+  localStorage.setItem('hp_settings', JSON.stringify(cfg));
+  updateTotalAndPreview();
 }
 
-function addToCart(itemId) {
-    const item = items.find(i => i.id === itemId);
-    if (!item || item.stock <= 0) return;
+// Чтение URL-параметров (если клиент открыл готовую ссылку или открыт ?admin=1)
+function initFromUrl() {
+  const params = new URLSearchParams(window.location.search);
 
-    item.stock -= 1; // Бронируем на витрине
+  if (params.has('item')) {
+    document.getElementById('itemDescInput').value = params.get('item');
+  }
+  if (params.has('amount')) {
+    document.getElementById('amountInput').value = Number(params.get('amount')) || 0;
+  }
+  if (params.has('email')) {
+    document.getElementById('emailInput').value = params.get('email');
+  }
 
-    const existing = cart.find(c => c.id === itemId);
-    if (existing) {
-        existing.quantity += 1;
-    } else {
-        cart.push({ id: item.id, name: item.name, price: item.price, quantity: 1, type: item.type });
-    }
-    saveData();
-    renderStorefront();
+  // Если ссылка для покупателя (?client=1), прячем верхние вкладки
+  if (params.get('client') === '1') {
+    document.getElementById('modeSwitcher').style.display = 'none';
+  }
 }
 
-function removeFromCart(itemId) {
-    const cartItem = cart.find(c => c.id === itemId);
-    if (!cartItem) return;
+// Переключение вкладок
+function switchTab(tabName, btnEl) {
+  document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+  document.getElementById(`tab-${tabName}`).classList.add('active');
 
-    const item = items.find(i => i.id === itemId);
-    if (item) item.stock += cartItem.quantity;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  if (btnEl) btnEl.classList.add('active');
 
-    cart = cart.filter(c => c.id !== itemId);
-    saveData();
-    renderStorefront();
-    renderCartModal();
+  if (tabName === 'link') updateClientLink();
+  if (tabName === 'history') renderHistory();
+  if (tabName === 'settings') renderLogs();
 }
 
-function updateCartCount() {
-    const totalCount = cart.reduce((sum, item) => sum + item.quantity, 0);
-    document.getElementById('cartCount').innerText = totalCount;
+// Кнопки - и + для поля Сумма (₽)
+function changeAmount(delta) {
+  const input = document.getElementById('amountInput');
+  const current = Number(input.value) || 0;
+  input.value = Math.max(0, current + delta);
+  updateTotalAndPreview();
 }
 
-function openCartModal() {
-    renderCartModal();
-    document.getElementById('cartModal').style.display = 'flex';
-}
+// Формирование точного payload чека CloudKassir (как в функции send_receipt из твоего кода)
+function buildCloudKassirPayload(amount, email, itemName) {
+  const inn = document.getElementById('cfgInn')?.value.trim() || '667100000000';
+  const taxSystem = Number(document.getElementById('cfgTax')?.value || 1);
+  const method = Number(document.getElementById('cfgMethod')?.value || 1);
 
-function renderCartModal() {
-    const container = document.getElementById('cartItemsContainer');
-    container.innerHTML = '';
-
-    if (cart.length === 0) {
-        container.innerHTML = '<p style="text-align:center; color:var(--text-light); padding:1rem;">Корзина пуста</p>';
-        document.getElementById('cartTotalPrice').innerText = '0 ₽';
-        document.getElementById('checkoutBtn').style.display = 'none';
-        return;
-    }
-
-    document.getElementById('checkoutBtn').style.display = 'block';
-    let totalPrice = 0;
-
-    cart.forEach(item => {
-        totalPrice += item.price * item.quantity;
-        container.innerHTML += `
-            <div class="cart-item-row">
-                <div>
-                    <b>${item.name}</b><br>
-                    <small>${item.quantity} шт. × ${item.price} ₽</small>
-                </div>
-                <div style="display:flex; align-items:center; gap:10px;">
-                    <span><b>${item.price * item.quantity} ₽</b></span>
-                    <button class="delete-btn" onclick="removeFromCart(${item.id})">✕</button>
-                </div>
-            </div>
-        `;
-    });
-
-    document.getElementById('cartTotalPrice').innerText = totalPrice + ' ₽';
-}
-
-function closeModals() {
-    document.getElementById('cartModal').style.display = 'none';
-}
-
-// Оформление заказа и запуск платежного виджета с чеком 54-ФЗ
-document.getElementById('checkoutForm').addEventListener('submit', (e) => {
-    e.preventDefault();
-    if (cart.length === 0) return;
-
-    const tg = document.getElementById('customerTg').value;
-    const email = document.getElementById('customerEmail').value;
-    const totalPrice = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    
-    const orderId = 'ORD-' + Math.floor(Math.random() * 10000);
-    const orderItemsSummary = cart.map(i => `${i.name} (x${i.quantity})`).join(', ');
-
-    const newOrder = {
-        id: orderId,
-        items: [...cart],
-        summary: orderItemsSummary,
-        total: totalPrice,
-        contact: `${tg} | ${email}`,
-        status: 'Ожидает оплаты',
-        date: new Date().toLocaleDateString('ru-RU'),
-        createdAt: Date.now()
-    };
-
-    orders.unshift(newOrder);
-    
-    // Формируем чек с точным составом позиций для CloudPayments/CloudKassir
-    const receiptItems = cart.map(item => ({
-        label: item.name,
-        price: item.price,
-        quantity: item.quantity,
-        amount: item.price * item.quantity,
-        vat: null,
-        method: 0, // Предоплата 100%
-        object: 4  // Товар
-    }));
-
-    cart = [];
-    saveData();
-    renderStorefront();
-    closeModals();
-
-    // Запуск виджета оплаты
-    payWithCloudPayments(orderId, totalPrice, email, tg, receiptItems, newOrder);
-});
-
-function payWithCloudPayments(orderId, amount, email, tg, receiptItems, orderObj) {
-    var widget = new cp.CloudPayments();
-    
-    widget.pay('auth', 
+  return {
+    Inn: inn,
+    Type: 'Income',
+    CustomerReceipt: {
+      Items: [
         {
-            publicId: 'pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx', // Замените на ваш Public ID из CloudPayments
-            description: `Оплата заказа ${orderId} в hellopinky`,
-            amount: amount,
-            currency: 'RUB',
-            accountId: tg,
-            email: email,
-            invoiceId: orderId,
-            receipt: {
-                Items: receiptItems,
-                taxationSystem: 0,
-                email: email,
-                phone: ''
-            }
-        },
-        {
-            onSuccess: function (options) {
-                orderObj.status = 'Оплачено';
-                saveData();
-                sendToGoogleSheets(orderObj);
-                renderAdminOrders();
-                alert('Оплата прошла успешно! Чек отправлен на вашу почту.');
-            },
-            onFail: function (reason, options) {
-                alert('Оплата не прошла: ' + reason);
-            }
+          label: itemName || 'Заказ в магазине hellopinky',
+          price: Number(amount),
+          quantity: 1,
+          amount: Number(amount),
+          vat: null,
+          method: method,
+          object: 1
         }
-    );
-}
-
-function manualConfirmPayment(orderId) {
-    const order = orders.find(o => o.id === orderId);
-    if (order) {
-        order.status = 'Оплачено';
-        saveData();
-        sendToGoogleSheets(order);
-        renderAdminOrders();
+      ],
+      taxationSystem: taxSystem,
+      email: email || 'client@hellopinky.ru'
     }
+  };
 }
 
-function sendToGoogleSheets(orderData) {
-    if(GOOGLE_APPS_SCRIPT_URL.includes('ВАШ_ДЛИННЫЙ_КОД')) return;
-    
-    const payload = {
-        id: orderData.id,
-        type: 'Заказ с сайта',
-        item: orderData.summary,
-        price: orderData.total,
-        contact: orderData.contact,
-        status: orderData.status,
-        date: orderData.date
-    };
+// Обновление плашки "Итого по чеку" и JSON-превью
+function updateTotalAndPreview() {
+  const itemDesc = document.getElementById('itemDescInput').value.trim();
+  const amount = Number(document.getElementById('amountInput').value) || 0;
+  const email = document.getElementById('emailInput').value.trim();
 
-    fetch(GOOGLE_APPS_SCRIPT_URL, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    }).catch(console.error);
+  document.getElementById('totalAmountDisplay').textContent =
+    `${amount.toLocaleString('ru-RU')} ₽`;
+
+  const payload = buildCloudKassirPayload(amount, email, itemDesc);
+  const previewBox = document.getElementById('jsonPreviewBox');
+  if (previewBox) {
+    previewBox.textContent = JSON.stringify(payload, null, 2);
+  }
+
+  updateClientLink();
 }
 
-document.getElementById('addItemForm').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const newItem = {
-        id: Date.now(),
-        type: document.getElementById('itemType').value,
-        name: document.getElementById('itemName').value,
-        desc: document.getElementById('itemDesc').value,
-        price: parseFloat(document.getElementById('itemPrice').value),
-        stock: parseInt(document.getElementById('itemStock').value),
-        img: document.getElementById('itemImg').value
-    };
-    items.push(newItem);
-    saveData();
-    e.target.reset();
-    renderAdminItems();
-    renderStorefront();
-});
-
-function renderAdminItems() {
-    const tbody = document.getElementById('adminItemsList');
-    tbody.innerHTML = '';
-    items.forEach(item => {
-        tbody.innerHTML += `
-            <tr>
-                <td>${item.name}</td>
-                <td>${item.type === 'instock' ? 'В наличии' : 'Предзаказ'}</td>
-                <td>${item.price} ₽</td>
-                <td>${item.stock} шт.</td>
-                <td><button class="delete-btn" onclick="deleteItem(${item.id})">Удалить</button></td>
-            </tr>
-        `;
-    });
+function toggleJsonPreview() {
+  const box = document.getElementById('jsonPreviewBox');
+  box.style.display = box.style.display === 'block' ? 'none' : 'block';
+  updateTotalAndPreview();
 }
 
-function renderAdminOrders() {
-    const tbody = document.getElementById('adminOrdersList');
-    tbody.innerHTML = '';
-    
-    if (orders.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-light);">Заказов пока нет</td></tr>';
-        return;
-    }
-
-    orders.forEach(order => {
-        const statusClass = order.status === 'Оплачено' ? 'status-paid' : 'status-pending';
-        const actionBtn = order.status === 'Ожидает оплаты' 
-            ? `<button style="padding:4px 8px; font-size:12px; cursor:pointer; background:var(--success); border:none; border-radius:4px;" onclick="manualConfirmPayment('${order.id}')">Подтвердить</button>` 
-            : '-';
-
-        tbody.innerHTML += `
-            <tr>
-                <td>${order.id}</td>
-                <td>${order.summary}</td>
-                <td>${order.contact}</td>
-                <td><b>${order.total} ₽</b></td>
-                <td><span class="status-badge ${statusClass}">${order.status}</span></td>
-                <td><small>${actionBtn}</small></td>
-            </tr>
-        `;
-    });
+function quickDemoFill() {
+  document.getElementById('itemDescInput').value = 'Блайнд-бокс HelloPinky + протекторы';
+  document.getElementById('amountInput').value = 1500;
+  document.getElementById('emailInput').value = 'client@hellopinky.ru';
+  updateTotalAndPreview();
+  showToast('Демо-данные подставлены 🌸');
 }
 
-function deleteItem(id) {
-    items = items.filter(item => item.id !== id);
-    saveData();
-    renderAdminItems();
-    renderStorefront();
+// Создание динамического QR СБП и постановка в очередь робота
+function handleCreatePayment(e) {
+  e.preventDefault();
+
+  const itemDesc = document.getElementById('itemDescInput').value.trim();
+  const amount = Number(document.getElementById('amountInput').value);
+  const email = document.getElementById('emailInput').value.trim();
+
+  if (!itemDesc || amount <= 0 || !email.includes('@')) {
+    showToast('Заполните позиции, сумму больше 0 ₽ и корректный E-mail 🌸');
+    return;
+  }
+
+  // Генерируем тестовый qrcId (как в API Модульбанка)
+  const qrcId = 'QRC-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+  const demoSbpLink = `https://qr.nspk.ru/${qrcId}?type=02&sum=${amount * 100}&cur=RUB`;
+
+  state.waiting[qrcId] = {
+    qrcId: qrcId,
+    email: email,
+    item: itemDesc,
+    amount: amount,
+    created_at: Date.now()
+  };
+  state.lastQrcId = qrcId;
+
+  saveState();
+  addLog(`🌸 Создан динамический СБП QR (${qrcId}) на ${amount} ₽ для ${email}`);
+
+  // Показываем блок оплаты СБП
+  const sbpBlock = document.getElementById('sbpPaymentBlock');
+  document.getElementById('sbpOrderDetails').textContent =
+    `ID QR: ${qrcId} • Позиция: «${itemDesc}» • Чек уйдёт на ${email}`;
+  const linkBtn = document.getElementById('sbpPayLink');
+  linkBtn.textContent = `🔥 ОПЛАТИТЬ ${amount.toLocaleString('ru-RU')} ₽ ПО СБП`;
+  linkBtn.href = demoSbpLink;
+  sbpBlock.style.display = 'block';
+
+  showToast(`Счёт СБП на ${amount} ₽ создан! Ожидаем оплату...`);
 }
 
-seedData();
-checkExpiredOrders();
-renderStorefront();
+// Симуляция ответа "Accepted" от Модульбанка и отправка чека в CloudKassir
+function simulateBankAccepted(targetQrcId) {
+  const qrcId = targetQrcId || state.lastQrcId || Object.keys(state.waiting)[0];
+  const order = state.waiting[qrcId];
+
+  if (!order) {
+    showToast('Нет активных заказов в очереди ожидания СБП');
+    return;
+  }
+
+  // Формируем чек CloudKassir
+  const receiptPayload = buildCloudKassirPayload(order.amount, order.email, order.item);
+  const fiscalNumber = 'ФД-' + Math.floor(10000000 + Math.random() * 90000000);
+
+  state.receipts.unshift({
+    qrcId: qrcId,
+    fiscalNumber: fiscalNumber,
+    date: new Date().toLocaleString('ru-RU'),
+    email: order.email,
+    item: order.item,
+    amount: order.amount,
+    payload: receiptPayload
+  });
+
+  delete state.waiting[qrcId];
+  saveState();
+
+  addLog(`✅ Статус QR ${qrcId} = Accepted! Чек ${fiscalNumber} отправлен на ${order.email}`);
+  document.getElementById('sbpPaymentBlock').style.display = 'none';
+  showToast(`Оплата подтверждена! Чек ${fiscalNumber} отправлен на ${order.email} 💖`);
+}
+
+// Генерация ссылки для отправки покупателю
+function updateClientLink() {
+  const baseUrl = window.location.origin + window.location.pathname;
+  const itemDesc = document.getElementById('itemDescInput').value.trim();
+  const amount = Number(document.getElementById('amountInput').value) || 0;
+
+  const params = new URLSearchParams();
+  params.set('client', '1');
+  if (itemDesc) params.set('item', itemDesc);
+  if (amount > 0) params.set('amount', String(amount));
+
+  const linkInput = document.getElementById('generatedLinkInput');
+  if (linkInput) {
+    linkInput.value = `${baseUrl}?${params.toString()}`;
+  }
+}
+
+function copyClientLink() {
+  updateClientLink();
+  const input = document.getElementById('generatedLinkInput');
+  input.select();
+  navigator.clipboard.writeText(input.value).then(() => {
+    showToast('Ссылка для клиента скопирована 🌸');
+  });
+}
+
+// Отрисовка истории чеков и логов робота
+function updateCounters() {
+  document.getElementById('receiptsCount').textContent = state.receipts.length;
+  const waitingCount = Object.keys(state.waiting).length;
+  const badge = document.getElementById('waitingCounterBadge');
+  if (badge) badge.textContent = `В очереди: ${waitingCount}`;
+}
+
+function renderHistory() {
+  const list = document.getElementById('receiptsHistoryList');
+  if (state.receipts.length === 0) {
+    list.innerHTML = `<div style="text-align:center; padding: 26px; color: var(--text-muted); font-size: 13px;">
+      Пробитых чеков пока нет 🌸
+    </div>`;
+    return;
+  }
+
+  list.innerHTML = state.receipts.map(r => `
+    <div class="history-item">
+      <div class="history-top">
+        <span>${r.item} — ${r.amount.toLocaleString('ru-RU')} ₽</span>
+        <span class="status-ok">✅ ${r.fiscalNumber}</span>
+      </div>
+      <div style="color: var(--text-muted);">
+        ${r.date} • E-mail: <b>${r.email}</b> • QR: ${r.qrcId}
+      </div>
+    </div>
+  `).join('');
+}
+
+function clearHistory() {
+  state.receipts = [];
+  saveState();
+  renderHistory();
+  showToast('История чеков очищена');
+}
+
+function renderLogs() {
+  const area = document.getElementById('robotLogsArea');
+  if (!area) return;
+  area.value = [...state.logs].reverse().join('\n');
+}
+
+function showToast(msg) {
+  const box = document.getElementById('toastBox');
+  box.textContent = msg;
+  box.style.display = 'block';
+  clearTimeout(window._toastTimer);
+  window._toastTimer = setTimeout(() => {
+    box.style.display = 'none';
+  }, 3500);
+}
+
+// Запуск при открытии страницы
+loadSettings();
+initFromUrl();
+updateTotalAndPreview();
+updateCounters();
+if (state.logs.length === 0) {
+  addLog('🤖 Робот hellopinky запущен (тестовый режим GitHub Pages).');
+}
