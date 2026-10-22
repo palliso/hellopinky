@@ -7,7 +7,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --primary: #ffb6c1;
+            --primary: #ffb6c1; /* Light pink */
             --primary-dark: #ff9eaa;
             --background: #fdfbfb;
             --surface: #ffffff;
@@ -156,7 +156,6 @@
             color: var(--text-light);
             margin-bottom: 1rem;
         }
-        
         .card-stock.low {
             color: var(--danger);
         }
@@ -194,6 +193,7 @@
             cursor: not-allowed;
         }
 
+        /* Modals */
         .modal-overlay {
             position: fixed;
             top: 0;
@@ -285,6 +285,7 @@
             opacity: 0.8;
         }
 
+        /* Admin Panel Styles */
         .admin-panel {
             display: none;
         }
@@ -342,8 +343,9 @@
             font-size: 0.8rem;
             font-weight: 500;
         }
-        
         .status-paid { background: #d4edda; color: #155724; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-cancelled { background: #f8d7da; color: #721c24; }
         
         .processing-spinner {
             display: none;
@@ -378,10 +380,14 @@
 
     <main id="storefront">
         <h2 class="section-title">В наличии</h2>
-        <div class="grid" id="inStockGrid"></div>
+        <div class="grid" id="inStockGrid">
+            <!-- Items injected by JS -->
+        </div>
 
         <h2 class="section-title">Предзаказ</h2>
-        <div class="grid" id="preOrderGrid"></div>
+        <div class="grid" id="preOrderGrid">
+            <!-- Items injected by JS -->
+        </div>
     </main>
 
     <main id="adminPanel" class="admin-panel">
@@ -461,6 +467,7 @@
         </div>
     </main>
 
+    <!-- Contact Form Modal -->
     <div class="modal-overlay" id="contactModal">
         <div class="modal">
             <h3 class="modal-title">Оформление заказа</h3>
@@ -477,6 +484,7 @@
         </div>
     </div>
     
+    <!-- Payment SBP Modal -->
     <div class="modal-overlay" id="paymentModal">
         <div class="modal">
             <h3 class="modal-title">Оплата СБП</h3>
@@ -501,13 +509,15 @@
     </div>
 
     <script>
+        // ВСТАВЬТЕ СЮДА ВАШ URL ОТ GOOGLE APPS SCRIPT:
         const GOOGLE_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/ВАШ_ДЛИННЫЙ_КОД/exec';
 
+        // Инициализация данных (Local Storage для демо)
         let items = JSON.parse(localStorage.getItem('hp_items')) || [];
         let orders = JSON.parse(localStorage.getItem('hp_orders')) || [];
         
-        let pendingOrderId = null;
-        const CANCEL_TIMEOUT_MS = 10 * 60 * 1000;
+        let pendingOrderId = null; // Для хранения ID заказа, который оплачивается
+        const CANCEL_TIMEOUT_MS = 10 * 60 * 1000; // 10 минут
 
         function seedData() {
             if (items.length === 0) {
@@ -540,6 +550,7 @@
             localStorage.setItem('hp_orders', JSON.stringify(orders));
         }
 
+        // Проверка просроченных заказов (каждую минуту)
         function checkExpiredOrders() {
             let changed = false;
             const now = Date.now();
@@ -547,6 +558,7 @@
             orders.forEach(order => {
                 if (order.status === 'Ожидает оплаты' && (now - order.createdAt > CANCEL_TIMEOUT_MS)) {
                     order.status = 'Отменен';
+                    // Возвращаем товар на склад
                     const item = items.find(i => i.id === order.itemId);
                     if (item) {
                         item.stock += 1;
@@ -562,7 +574,7 @@
             }
         }
         
-        setInterval(checkExpiredOrders, 60000);
+        setInterval(checkExpiredOrders, 60000); // Запуск раз в минуту
 
         function toggleAdmin(show) {
             document.getElementById('storefront').style.display = show ? 'none' : 'block';
@@ -615,6 +627,7 @@
             if (preOrderGrid.innerHTML === '') preOrderGrid.innerHTML = '<p style="color:var(--text-light)">Нет активных предзаказов.</p>';
         }
 
+        // Логика покупки
         function openContactModal(itemId) {
             document.getElementById('orderItemId').value = itemId;
             document.getElementById('customerContact').value = '';
@@ -624,6 +637,7 @@
         function closeModals() {
             document.getElementById('contactModal').style.display = 'none';
             document.getElementById('paymentModal').style.display = 'none';
+            // Сбрасываем состояния
             document.getElementById('paymentOptions').style.display = 'block';
             document.getElementById('paymentSpinner').style.display = 'none';
             document.getElementById('cancelPaymentBtn').style.display = 'block';
@@ -636,8 +650,10 @@
             
             const item = items.find(i => i.id === itemId);
             if(item && item.stock > 0) {
+                // Бронируем товар
                 item.stock -= 1;
                 
+                // Создаем заказ со статусом ожидания
                 const newOrder = {
                     id: 'ORD-' + Math.floor(Math.random() * 10000),
                     itemId: item.id,
@@ -652,10 +668,11 @@
                 
                 orders.unshift(newOrder);
                 saveData();
-                renderStorefront();
+                renderStorefront(); // Обновляем остатки на витрине
                 
                 pendingOrderId = newOrder.id;
                 
+                // Переходим к оплате
                 document.getElementById('contactModal').style.display = 'none';
                 document.getElementById('paymentAmount').innerText = item.price + ' ₽';
                 document.getElementById('paymentModal').style.display = 'flex';
@@ -667,6 +684,7 @@
             document.getElementById('cancelPaymentBtn').style.display = 'none';
             document.getElementById('paymentSpinner').style.display = 'block';
             
+            // Имитация задержки оплаты
             setTimeout(() => {
                 confirmPayment(pendingOrderId);
             }, 2500);
@@ -677,6 +695,8 @@
             if (orderIndex > -1) {
                 orders[orderIndex].status = 'Оплачено';
                 saveData();
+                
+                // Отправляем в Google Таблицу ТОЛЬКО оплаченные заказы
                 sendToGoogleSheets(orders[orderIndex]);
             }
             
@@ -687,7 +707,7 @@
         
         function sendToGoogleSheets(orderData) {
             if(GOOGLE_APPS_SCRIPT_URL.includes('ВАШ_ДЛИННЫЙ_КОД')) {
-                console.log('Скрипт Google Таблиц не подключен.', orderData);
+                console.log('Скрипт Google Таблиц еще не подключен. Локальные данные:', orderData);
                 return;
             }
             
@@ -699,10 +719,11 @@
                 },
                 body: JSON.stringify(orderData)
             })
-            .then(response => console.log('Отправлено', response))
-            .catch(error => console.error('Ошибка:', error));
+            .then(response => console.log('Отправлено в таблицу', response))
+            .catch(error => console.error('Ошибка отправки в Google Sheets:', error));
         }
 
+        // Админ функции
         document.getElementById('addItemForm').addEventListener('submit', (e) => {
             e.preventDefault();
             const newItem = {
@@ -742,6 +763,7 @@
             const tbody = document.getElementById('adminOrdersList');
             tbody.innerHTML = '';
             
+            // Фильтруем, чтобы отображать только Оплаченные заказы, как просили
             const paidOrders = orders.filter(order => order.status === 'Оплачено');
             
             if (paidOrders.length === 0) {
@@ -769,8 +791,10 @@
             renderStorefront();
         }
 
+        // Старт
         seedData();
         checkExpiredOrders();
         renderStorefront();
     </script>
 </body>
+</html>
