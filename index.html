@@ -6,6 +6,8 @@
     <title>hellopinky | Store</title>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <!-- Виджет CloudPayments / CloudKassir для онлайн-оплаты и чеков -->
+    <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js"></script>
 </head>
 <body>
 
@@ -124,31 +126,12 @@
                     <input type="text" id="customerTg" class="form-control" placeholder="@username" required>
                 </div>
                 <div class="form-group">
-                    <label>Электронная почта (для чека)</label>
+                    <label>Электронная почта (для отправки чека)</label>
                     <input type="email" id="customerEmail" class="form-control" placeholder="mail@example.com" required>
                 </div>
-                <button type="submit" class="btn btn-full" id="checkoutBtn">Оплатить через СБП</button>
+                <button type="submit" class="btn btn-full" id="checkoutBtn">Оплатить и получить чек</button>
                 <button type="button" class="close-modal" onclick="closeModals()">Продолжить покупки</button>
             </form>
-        </div>
-    </div>
-    
-    <!-- Модалка СБП / QR-код Модульбанка -->
-    <div class="modal-overlay" id="paymentModal">
-        <div class="modal" style="text-align: center;">
-            <h3 class="modal-title">Оплата СБП</h3>
-            <p style="font-size: 0.95rem; margin-bottom: 0.5rem;">Сумма к оплате: <b id="paymentAmountDisplay">0 ₽</b></p>
-            <p style="font-size: 0.8rem; color: var(--text-light); margin-bottom: 1rem;">Заказ забронирован на 10 минут.</p>
-            
-            <button class="sbp-button" id="generateQrBtn" onclick="requestDynamicQR()">Сгенерировать QR-код банка</button>
-
-            <div class="qr-container" id="qrContainer" style="display:none; margin: 1.5rem 0; padding: 1rem; background: #fff; border-radius: 12px; border: 2px dashed var(--primary);">
-                <p style="font-size: 0.85rem; color: #7a7a7a; margin-bottom: 10px;">Отсканируйте код в приложении банка:</p>
-                <img id="sbpQrImage" src="" alt="QR Code" style="max-width: 200px; margin: 0 auto; display: block;">
-                <p class="qr-status" id="paymentStatusText" style="font-size: 0.9rem; margin-top: 1rem; color: var(--warning); font-weight: 600;">Ожидаем оплату...</p>
-            </div>
-            
-            <button type="button" class="close-modal" onclick="closeModals()" style="margin-top: 1.5rem;">Закрыть</button>
         </div>
     </div>
 
