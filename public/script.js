@@ -1,3 +1,16 @@
+let currentPaymentType = 'main';
+
+document.addEventListener('DOMContentLoaded', () => {
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  tabBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      tabBtns.forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      currentPaymentType = e.target.getAttribute('data-type');
+    });
+  });
+});
+
 function updateTotal() {
   const amount = Number(document.getElementById('amountInput').value) || 0;
   document.getElementById('totalAmountDisplay').textContent =
@@ -24,7 +37,7 @@ async function handlePayment(e) {
     const response = await fetch('/api/pay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item, amount, email })
+      body: JSON.stringify({ item, amount, email, paymentType: currentPaymentType })
     });
 
     const data = await response.json();
