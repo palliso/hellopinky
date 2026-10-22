@@ -107,3 +107,15 @@ body {
   color: #fff;
   box-shadow: 0 4px 15px rgba(255, 82, 146, 0.2);
 }
+
+/* Отключаем системные стрелки в полях ввода чисел (Chrome, Safari, Edge, Opera) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Отключаем системные стрелки для Firefox */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
