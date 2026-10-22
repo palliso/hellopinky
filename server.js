@@ -20,7 +20,7 @@ const REDIRECT_URL = "https://hellopinky.ru";
 
 // Конфигурация торговых точек для разных вкладок
 const RETAIL_POINTS = {
-    main: "", 
+    main: "9fc5b3f4-6512-4efb-9b4d-365db96808bd", // <--- ВСТАВЬТЕ СЮДА ID ВАШЕЙ ОСНОВНОЙ ТОЧКИ (ИЗ БРАУЗЕРА)
     preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
 };
 
@@ -126,6 +126,7 @@ app.post('/api/pay', async (req, res) => {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
+    // Выбираем нужный ID на основе того, какая вкладка была нажата
     const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
 
     const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
