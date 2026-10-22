@@ -152,9 +152,9 @@ function renderCartModal() {
 
 function closeModals() {
     document.getElementById('cartModal').style.display = 'none';
-    document.getElementById('paymentModal').style.display = 'none';
 }
 
+// Оформление заказа и запуск платежного виджета с деталями чека
 document.getElementById('checkoutForm').addEventListener('submit', (e) => {
     e.preventDefault();
     if (cart.length === 0) return;
@@ -178,28 +178,71 @@ document.getElementById('checkoutForm').addEventListener('submit', (e) => {
     };
 
     orders.unshift(newOrder);
+    
+    // Формируем массив позиций для чека CloudPayments (54-ФЗ)
+    const receiptItems = cart.map(item => ({
+        label: item.name,              // Название товара в чеке
+        price: item.price,             // Цена за 1 шт
+        quantity: item.quantity,       // Количество
+        amount: item.price * item.quantity, // Итого по позиции
+        vat: null,                     // Ставка НДС (если без НДС, оставляем null или прописываем вашу)
+        method: 0,                     // 0 = Полная предоплата
+        object: 4                      // 4 = Товар
+    }));
+
     cart = [];
     saveData();
     renderStorefront();
+    closeModals();
 
-    activeOrderId = orderId;
-
-    document.getElementById('ymSum').value = totalPrice;
-    document.getElementById('ymTargets').value = `Заказ ${orderId}: ${orderItemsSummary}`;
-    document.getElementById('ymLabel').value = orderId;
-    document.getElementById('paymentAmountDisplay').innerText = totalPrice + ' ₽';
-
-    document.getElementById('cartModal').style.display = 'none';
-    document.getElementById('paymentModal').style.display = 'flex';
+    // Запуск виджета оплаты CloudPayments с передачей чека
+    payWithCloudPayments(orderId, totalPrice, email, tg, receiptItems, newOrder);
 });
 
-function handlePaymentRedirect() {
-    const order = orders.find(o => o.id === activeOrderId);
-    if(order) {
-        order.status = 'Оплачено';
-        saveData();
-        sendToGoogleSheets(order);
-    }
+function payWithCloudPayments(orderId, amount, email, tg, receiptItems, orderObj) {
+    // Убедитесь, что на страницу в index.html подключен скрипт виджета: 
+    // <script src="https://widget.cloudpayments.ru/bundles/cloudpayments.js"></script>
+    
+    var widget = new cp.CloudPayments();
+    
+    widget.pay('auth', // или 'charge'
+        {
+            publicId: 'pk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx', // Вставьте сюда ваш Public ID из личного кабинета CloudPayments
+            description: `Оплата заказа ${orderId} в hellopinky (TG: ${tg})`,
+            amount: amount,
+            currency: 'RUB',
+            accountId: tg,
+            email: email,
+            invoiceId: orderId,
+            jsonData: { 
+                tgUsername: tg 
+            },
+            // Передаем детализированный чек для фискализации (то, что человек покупает)
+            receipt: {
+                Items: receiptItems,
+                taxationSystem: 0, // Система налогообложения (0 = ОСН, 1 = УСН доход и т.д., зависит от вашей настройки)
+                email: email,
+                phone: ''
+            }
+        },
+        {
+            onSuccess: function (options) {
+                // Успешная оплата
+                orderObj.status = 'Оплачено';
+                saveData();
+                sendToGoogleSheets(orderObj);
+                renderAdminOrders();
+                alert('Оплата прошла успешно! Чек отправлен на вашу почту.');
+            },
+            onFail: function (reason, options) {
+                // Ошибка оплаты
+                alert('Оплата не прошла: ' + reason);
+            },
+            onComplete: function (paymentResult, options) {
+                // Закрытие виджета
+            }
+        }
+    );
 }
 
 function manualConfirmPayment(orderId) {
