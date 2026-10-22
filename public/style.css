@@ -56,6 +56,16 @@ body {
 }
 .form-control:focus { background: #fff; border-color: var(--pink-primary); box-shadow: 0 0 0 3px rgba(255, 82, 146, 0.14); }
 
+/* Убираем стрелочки (спиннеры) у поля типа number */
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+  -webkit-appearance: none; 
+  margin: 0; 
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
+
 .total-box {
   background: linear-gradient(90deg, #fff0f6 0%, #ffe3ef 100%);
   border: 1px solid var(--pink-border); border-radius: 16px;
