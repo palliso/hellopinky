@@ -18,13 +18,15 @@ const CP_SECRET = "f92c854df15751ca8132d7b2e0b0078a";
 const MY_INN = "860231492889";
 const REDIRECT_URL = "https://hellopinky.ru";
 
-// Жёстко фиксируем ID вашей торговой точки «hellopinky | предзаказы»
-const TARGET_RETAIL_POINT_ID = "a828d71d-f5b5-4959-a605-d9a0192d8416";
+// Конфигурация торговых точек для разных вкладок
+const RETAIL_POINTS = {
+    main: "СЮДА_ВСТАВИТЬ_ID_ДЛЯ_ОСНОВНЫХ_ОПЛАТ", 
+    preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
+};
 
 let state = {
     waiting: {},
-    history: [],
-    retailPointId: TARGET_RETAIL_POINT_ID
+    history: []
 };
 
 function addLog(msg) {
@@ -34,11 +36,11 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-async function createDynamicQr(amount, description) {
+async function createDynamicQr(amount, description, retailPointId) {
     const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
     const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
     const payload = {
-        retailPointId: state.retailPointId,
+        retailPointId: retailPointId,
         sum: Number(amount),
         extraInfo: description.substring(0, 140),
         redirectUrl: REDIRECT_URL
@@ -118,15 +120,19 @@ setInterval(async () => {
 
 // API маршруты
 app.post('/api/pay', async (req, res) => {
-    const { item, amount, email } = req.body;
+    const { item, amount, email, paymentType } = req.body;
+    
     if (!item || !amount || amount <= 0 || !email) {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    const { link, qrcId } = await createDynamicQr(amount, item);
+    const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
+
+    const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
+    
     if (link && qrcId) {
         state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
-        addLog(`🌸 Создан СБП QR для ${email} на сумму ${amount} ₽ (${item})`);
+        addLog(`🌸 Создан СБП QR (${paymentType}) для ${email} на сумму ${amount} ₽ (${item})`);
         return res.json({ success: true, link });
     }
 
@@ -144,5 +150,5 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Сервер запущен и слушает порт ${PORT} для точки «hellopinky | предзаказы»`);
+    console.log(`🚀 Сервер запущен и слушает порт ${PORT}`);
 });
