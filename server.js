@@ -18,16 +18,11 @@ const CP_SECRET = "f92c854df15751ca8132d7b2e0b0078a";
 const MY_INN = "860231492889";
 const REDIRECT_URL = "https://hellopinky.ru";
 
-// Конфигурация торговых точек для разных вкладок
-// Пока используем один рабочий ID для проверки обеих кнопок
-const RETAIL_POINTS = {
-    main: "a828d71d-f5b5-4959-a605-d9a0192d8416", 
-    preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
-};
-
 let state = {
     waiting: {},
-    history: []
+    history: [],
+    companyId: null,
+    retailPointId: null
 };
 
 function addLog(msg) {
@@ -37,11 +32,47 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-async function createDynamicQr(amount, description, retailPointId) {
+async function getModulRetailPointId() {
+    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
+    try {
+        if (!state.companyId) {
+            const accRes = await fetch("https://api.modulbank.ru/v1/account-info", { method: "POST", headers });
+            if (accRes.ok) {
+                const data = await accRes.json();
+                state.companyId = data[0]?.companyId || data[0]?.id;
+            }
+        }
+        if (state.companyId) {
+            const rpRes = await fetch(`https://api.modulbank.ru/v1/sbp/retail-points?companyId=${state.companyId}`, { method: "GET", headers });
+            if (rpRes.ok) {
+                const points = await rpRes.json();
+                // Выводим в лог все ваши точки, чтобы вы видели их ID и названия
+                console.log("📌 ДОСТУПНЫЕ ТОРГОВЫЕ ТОЧКИ СБП:", JSON.stringify(points, null, 2));
+                
+                if (points && points.length > 0) {
+                    // ЕСЛИ НУЖНА ВТОРАЯ ТОЧКА, замените points[0].id на points[1].id
+                    return points[0].id; 
+                }
+            }
+        }
+    } catch (e) {
+        addLog(`❌ Ошибка получения точек: ${e.message}`);
+    }
+    return null;
+}
+
+async function createDynamicQr(amount, description) {
+    if (!state.retailPointId) {
+        state.retailPointId = await getModulRetailPointId();
+    }
+    if (!state.retailPointId) {
+        return { link: null, qrcId: null };
+    }
+
     const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
     const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
     const payload = {
-        retailPointId: retailPointId,
+        retailPointId: state.retailPointId,
         sum: Number(amount),
         extraInfo: description.substring(0, 140),
         redirectUrl: REDIRECT_URL
@@ -121,21 +152,15 @@ setInterval(async () => {
 
 // API маршруты
 app.post('/api/pay', async (req, res) => {
-    // ТЕПЕРЬ СЕРВЕР ПОНИМАЕТ paymentType
-    const { item, amount, email, paymentType } = req.body;
-    
+    const { item, amount, email } = req.body;
     if (!item || !amount || amount <= 0 || !email) {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    // Подставляем нужный ID
-    const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
-
-    const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
-    
+    const { link, qrcId } = await createDynamicQr(amount, item);
     if (link && qrcId) {
         state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
-        addLog(`🌸 Создан СБП QR (${paymentType}) для ${email} на сумму ${amount} ₽ (${item})`);
+        addLog(`🌸 Создан СБП QR для ${email} на сумму ${amount} ₽ (${item})`);
         return res.json({ success: true, link });
     }
 
