@@ -300,6 +300,29 @@ app.post('/api/delivery-calc', async (req, res) => {
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
+// --- СПЕЦИАЛЬНЫЙ ТЕСТЕР ДЛЯ ТАБЛИЦ ---
+app.get('/api/debug', async (req, res) => {
+    try {
+        const ordRes = await fetch(TSV_ORDERS);
+        const rawOrders = await ordRes.text();
+        const orders = parseTSV(rawOrders);
+        
+        const prodRes = await fetch(TSV_PRODUCTS);
+        const rawProducts = await prodRes.text();
+        const products = parseTSV(rawProducts);
+        
+        res.json({
+            "1_Заголовки_Заказов": Object.keys(orders[0] || {}),
+            "2_Заголовки_Справочника": Object.keys(products[0] || {}),
+            "3_Первая_строка_Заказов": orders[0],
+            "4_Первая_строка_Справочника": products[0],
+            "5_Сырой_текст": rawOrders.substring(0, 150)
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Сервер запущен. Порт ${PORT}`);
