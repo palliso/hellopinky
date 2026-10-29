@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>hellopinky — оплата заказа</title>
+  <!-- ВСТАВЬ СЮДА СВОЙ API КЛЮЧ ЯНДЕКС КАРТ ВМЕСТО ВАШ_КЛЮЧ -->
+  <script src="https://api-maps.yandex.ru/2.1/?lang=ru_RU&apikey=ВАШ_КЛЮЧ" type="text/javascript"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@600;700&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -22,9 +24,6 @@
         
         <div class="tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
           <button type="button" class="tab-btn active" data-type="main" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer; font-size: 13px;">Основные оплаты</button>
-          
-          <button type="button" class="tab-btn" data-type="preorder" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Предзаказы</button>
-          
           <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Доставка Ozon</button>
         </div>
 
@@ -42,17 +41,14 @@
         <div id="deliveryFields" style="display: none;">
           <div class="form-group">
             <label for="tgInput">Юзернейм в Telegram</label>
-            <input type="text" id="tgInput" class="form-control" placeholder="Например: @hellopinky" onchange="calculateDelivery()" />
+            <input type="text" id="tgInput" class="form-control" placeholder="Например: @hellopinky" onchange="triggerCalc()" />
           </div>
           
           <div class="form-group">
-            <label for="phoneInput">Телефон получателя</label>
-            <input type="tel" id="phoneInput" class="form-control" placeholder="+7 999 000-00-00" />
-          </div>
-
-          <div class="form-group" style="padding-top: 10px;">
-            <label for="pvzAddressInput">Адрес ПВЗ Ozon</label>
-            <input type="text" id="pvzAddressInput" class="form-control" placeholder="Например: Екатеринбург, ул. Ленина, 10" onchange="calculateDelivery()" />
+            <label>Выберите пункт выдачи на карте</label>
+            <!-- БЛОК КАРТЫ -->
+            <div id="map" style="width: 100%; height: 300px; border-radius: 8px; background: #f0f0f0; margin-top: 5px;"></div>
+            <div id="selectedPvzText" style="font-size: 12px; color: #666; margin-top: 5px;">Пункт не выбран</div>
           </div>
           
           <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 14px; color: #b05c8a; margin-top: 15px; padding: 12px; background: #fbe6f0; border-radius: 8px;">
@@ -70,9 +66,7 @@
           <span class="total-box-amount" id="totalAmountDisplay">0 ₽</span>
         </div>
 
-        <button type="submit" class="btn btn-primary" id="submitBtn">
-          ПЕРЕЙТИ К ОПЛАТЕ
-        </button>
+        <button type="submit" class="btn btn-primary" id="submitBtn">ПЕРЕЙТИ К ОПЛАТЕ</button>
       </form>
     </main>
   </div>
