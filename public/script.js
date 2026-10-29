@@ -1,6 +1,6 @@
 let currentPaymentType = 'main';
 let currentDeliveryCost = 0;
-let confirmedPvzAddress = ""; // Сохраняем точный адрес, который нашел Ozon
+let confirmedPvzAddress = ""; 
 
 document.addEventListener('DOMContentLoaded', () => {
   const tabBtns = document.querySelectorAll('.tab-btn');
@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const itemInput = document.getElementById('itemInput');
   const amountInput = document.getElementById('amountInput');
   const tgInput = document.getElementById('tgInput');
+  const phoneInput = document.getElementById('phoneInput');
   const pvzAddressInput = document.getElementById('pvzAddressInput');
 
   tabBtns.forEach(btn => {
@@ -33,6 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
         itemInput.required = false;
         amountInput.required = false;
         tgInput.required = true;
+        phoneInput.required = true; // Сделали телефон обязательным
         pvzAddressInput.required = true;
       } else {
         productFields.style.display = 'block';
@@ -40,6 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
         itemInput.required = true;
         amountInput.required = true;
         tgInput.required = false;
+        phoneInput.required = false;
         pvzAddressInput.required = false;
       }
       updateTotal();
@@ -50,6 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
 async function calculateDelivery() {
     const address = document.getElementById('pvzAddressInput').value.trim();
     const tg = document.getElementById('tgInput').value.trim();
+    const phone = document.getElementById('phoneInput').value.trim();
     const costBox = document.getElementById('deliveryInfoBox');
     const costDisplay = document.getElementById('deliveryCostDisplay');
     
@@ -67,14 +71,14 @@ async function calculateDelivery() {
         const response = await fetch('/api/delivery-calc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ targetAddress: address, tgUser: tg })
+            body: JSON.stringify({ targetAddress: address, tgUser: tg, phone: phone })
         });
 
         const data = await response.json();
 
         if (data.success) {
             currentDeliveryCost = data.deliveryPrice;
-            confirmedPvzAddress = data.foundAddress; // Сохраняем точный адрес для чека
+            confirmedPvzAddress = data.foundAddress; 
             costDisplay.innerHTML = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽ <br><span style="font-size:11px; color:#666;">(Найден ПВЗ: ${confirmedPvzAddress})</span>`;
         } else {
             costDisplay.textContent = data.error || 'Ошибка расчета';
@@ -107,12 +111,17 @@ async function handlePayment(e) {
 
   if (currentPaymentType === 'delivery') {
     const tg = document.getElementById('tgInput').value.trim();
+    const phone = document.getElementById('phoneInput').value.trim();
     
     if (currentDeliveryCost <= 0 || !confirmedPvzAddress) {
         showToast('Дождитесь точного расчета стоимости.');
         return;
     }
-    finalItem = `Доставка Ozon (${tg}, ПВЗ: ${confirmedPvzAddress})`;
+    if (!phone) {
+        showToast('Пожалуйста, укажите номер телефона.');
+        return;
+    }
+    finalItem = `Доставка Ozon (${tg}, ПВЗ: ${confirmedPvzAddress}, тел: ${phone})`;
     finalAmount = currentDeliveryCost;
   } else {
     finalItem = document.getElementById('itemInput').value.trim();
