@@ -147,7 +147,6 @@ function parseTSV(text) {
         return obj;
     });
 }
-
 // --- АЛГОРИТМ УПАКОВКИ (ОБНОВЛЕННЫЙ) ---
 async function getOptimalPackaging(username) {
     try {
@@ -170,7 +169,8 @@ async function getOptimalPackaging(username) {
         let foundProducts = 0;
 
         userOrders.forEach(o => {
-            const orderItemName = (o['товар'] || o['позиция'] || '').trim().toLowerCase();
+            // Добавили чтение колонки 'товар (точное название)'
+            const orderItemName = (o['товар (точное название)'] || o['товар'] || o['позиция'] || '').trim().toLowerCase();
             
             const prod = products.find(p => {
                 const pName = (p['товар'] || p['позиция'] || '').trim().toLowerCase();
@@ -194,7 +194,7 @@ async function getOptimalPackaging(username) {
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
             } else {
-                addLog(`⚠️ Товар не найден в Справочнике: "${o['товар']}"`);
+                addLog(`⚠️ Товар не найден в Справочнике: "${orderItemName}"`);
             }
         });
 
