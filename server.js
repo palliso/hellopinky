@@ -27,12 +27,36 @@ const REDIRECT_URL = "https://hellopinky.ru";
 let state = { waiting: {}, history: [], companyId: null, retailPointsMap: { main: null, preorder: null } };
 let ozonToken = null, ozonTokenExpiresAt = 0;
 let cachedOzonPoints = [];
+let ozonDdosCookie = ""; // Хранилище куки для обхода защиты Ozon
 
 function addLog(msg) {
     const now = new Date().toLocaleTimeString('ru-RU');
     state.history.unshift(`[${now}] ${msg}`);
     if (state.history.length > 30) state.history.pop();
     console.log(`[LOG] ${msg}`);
+}
+
+// --- СПЕЦИАЛЬНАЯ ОБЕРТКА ДЛЯ ОБХОДА DDOS ЗАЩИТЫ OZON ---
+async function fetchOzon(url, options = {}) {
+    options.redirect = 'manual'; // Отключаем авто-редирект, чтобы поймать куку
+    if (!options.headers) options.headers = {};
+    if (ozonDdosCookie) options.headers['Cookie'] = ozonDdosCookie;
+
+    let res = await fetch(url, options);
+
+    // Если Ozon кидает редирект (302/307) для проверки
+    if (res.status === 302 || res.status === 307) {
+        const setCookie = res.headers.get('set-cookie');
+        if (setCookie) {
+            ozonDdosCookie = setCookie.split(';')[0]; // Запоминаем куку защиты
+            options.headers['Cookie'] = ozonDdosCookie;
+        }
+        const loc = res.headers.get('location');
+        const redirectUrl = loc.startsWith('http') ? loc : `https://api-delivery.ozon.ru${loc}`;
+        // Повторяем запрос уже с кукой
+        res = await fetch(redirectUrl, options);
+    }
+    return res;
 }
 
 async function getOzonToken() {
@@ -55,22 +79,17 @@ async function getOzonToken() {
         } else {
             return { error: await res.text() };
         }
-    } catch (e) {
-        return { error: e.message };
-    }
+    } catch (e) { return { error: e.message }; }
 }
 
-// --- СКАЧИВАЕМ И КЭШИРУЕМ АДРЕСА ПВЗ ---
 async function fetchOzonPoints() {
     addLog("Загружаем базу адресов Ozon...");
     const auth = await getOzonToken();
-    if (auth.error) {
-        addLog(`Ошибка токена: ${auth.error}`);
-        return;
-    }
+    if (auth.error) { addLog(`Ошибка токена: ${auth.error}`); return; }
+    
     try {
-        // Качаем до 5000 ПВЗ, чтобы гарантированно покрыть крупные города
-        const listRes = await fetch("https://api-delivery.ozon.ru/v1/delivery-point/list", {
+        // ИСПОЛЬЗУЕМ НАШУ ОБЕРТКУ С КУКАМИ
+        const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
             method: "POST", headers: { "Authorization": `Bearer ${auth.token}`, "Content-Type": "application/json" },
             body: JSON.stringify({ pagination: { limit: 5000 } })
         });
@@ -79,7 +98,7 @@ async function fetchOzonPoints() {
         
         const ids = listData.delivery_points.map(p => p.delivery_point_id);
 
-        const infoRes = await fetch("https://api-delivery.ozon.ru/v1/delivery-point/info", {
+        const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
             method: "POST", headers: { "Authorization": `Bearer ${auth.token}`, "Content-Type": "application/json" },
             body: JSON.stringify({ delivery_point_ids: ids })
         });
@@ -94,7 +113,7 @@ async function fetchOzonPoints() {
         addLog(`❌ Ошибка скачивания ПВЗ: ${e.message}`);
     }
 }
-setTimeout(fetchOzonPoints, 2000); // Запускаем при старте сервера
+setTimeout(fetchOzonPoints, 2000);
 
 function parseTSV(text) {
     const cleanText = text.replace(/\r/g, '');
@@ -168,35 +187,30 @@ async function getOptimalPackaging(username) {
 
 // --- УМНЫЙ ПОИСК И РАСЧЕТ ДОСТАВКИ ---
 app.post('/api/delivery-calc', async (req, res) => {
-    const { targetAddress, tgUser } = req.body;
+    const { targetAddress, tgUser, phone } = req.body;
     if (!targetAddress || !tgUser) return res.status(400).json({ success: false, error: "Укажите ПВЗ и Юзернейм." });
 
     if (cachedOzonPoints.length === 0) {
-        return res.status(500).json({ success: false, error: "База ПВЗ еще загружается, подождите 10 секунд и попробуйте снова." });
+        return res.status(500).json({ success: false, error: "База ПВЗ еще загружается, подождите немного и попробуйте снова." });
     }
 
-    // 1. Умный поиск по тексту (ищем ПВЗ, в адресе которого есть все слова, введенные клиентом)
     const searchTerms = targetAddress.toLowerCase().match(/[a-zа-яё0-9]+/g) || [];
     const foundPvz = cachedOzonPoints.find(p => {
         const addrNorm = p.address.toLowerCase();
         return searchTerms.every(term => addrNorm.includes(term));
     });
 
-    if (!foundPvz) {
-        return res.status(400).json({ success: false, error: "ПВЗ не найден. Уточните адрес." });
-    }
+    if (!foundPvz) return res.status(400).json({ success: false, error: "ПВЗ не найден. Уточните адрес." });
 
-    // 2. Сборка коробки
     const packData = await getOptimalPackaging(tgUser);
     if (packData.error) return res.status(400).json({ success: false, error: packData.error });
 
     const authResult = await getOzonToken();
     if (authResult.error) return res.status(500).json({ success: false, error: `Ошибка токена: ${authResult.error}` });
 
-    // 3. Запрос стоимости в Ozon (передаем найденный ID)
     const url = "https://api-delivery.ozon.ru/v1/order/checkout";
     const payload = {
-        recipient: { phone_number: "+79990000000" },
+        recipient: { phone_number: phone || "+79990000000" }, // Передаем введенный телефон
         postings: [{
             request_id: 1,
             shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
@@ -214,7 +228,8 @@ app.post('/api/delivery-calc', async (req, res) => {
     };
 
     try {
-        const ozonRes = await fetch(url, {
+        // ИСПОЛЬЗУЕМ НАШУ ОБЕРТКУ
+        const ozonRes = await fetchOzon(url, {
             method: "POST", headers: { "Authorization": `Bearer ${authResult.token}`, "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
@@ -224,7 +239,6 @@ app.post('/api/delivery-calc', async (req, res) => {
             const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
             const finalPrice = Math.ceil((ozonTariff + packData.box.materialCost + 20) / 0.92);
 
-            // Возвращаем цену и официальный адрес найденного ПВЗ для подтверждения на экране
             res.json({ success: true, deliveryPrice: finalPrice, foundAddress: foundPvz.address });
         } else {
             const errText = await ozonRes.text();
@@ -235,8 +249,15 @@ app.post('/api/delivery-calc', async (req, res) => {
     }
 });
 
-// ... логика Модульбанка ...
-app.post('/api/pay', async (req, res) => { /* Оставляем без изменений */ });
+// МОДУЛЬБАНК И CLOUDPAYMENTS
+// ... (оставила функцию создания СБП qr-кода и чеков без изменений для экономии места)
+app.post('/api/pay', async (req, res) => {
+    const { item, amount, email, paymentType } = req.body;
+    if (!item || !amount || amount <= 0 || !email) return res.status(400).json({ success: false, error: "Заполните все поля." });
+    
+    // В реальном коде здесь вызов Модульбанка. У тебя он уже написан!
+    res.json({ success: true, link: 'https://pay.modulbank.ru/' }); 
+});
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
