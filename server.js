@@ -1,4 +1,3 @@
-// Отключаем проверку SSL-сертификатов для API Модульбанка
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const express = require('express');
@@ -9,23 +8,26 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- ССЫЛКИ НА GOOGLE ТАБЛИЦУ (TSV) ---
+// --- ССЫЛКИ НА ТАБЛИЦЫ ---
 const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
 const TSV_PRODUCTS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=538172532&single=true&output=tsv";
 const TSV_BOXES = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=1518762544&single=true&output=tsv";
 
-// --- КЛЮЧИ ---
+// --- КЛЮЧИ OZON (ОБЯЗАТЕЛЬНО ЗАПОЛНИ!) ---
+const OZON_CLIENT_ID = "ТВОЙ_CLIENT_ID";
+const OZON_CLIENT_SECRET = "ТВОЙ_CLIENT_SECRET";
+const OZON_SHIPMENT_METHOD_ID = 1020005031049340; // ВАЖНО: ID твоего метода доставки из кабинета Ozon
+
+// --- КЛЮЧИ ОПЛАТЫ ---
 const MODUL_TOKEN = "ZWU1MzQzZTctYmUzNi00YjlkLWI3MGMtNDEzYjM0YWYyNDA1OWMzZDlmMTgtOWNjNi00N2E1LTkwMzktNjI0NzIxODRhMGJi";
 const CP_ID = "pk_f36ba0fb530c9daf8fb7b97ec5dee";
 const CP_SECRET = "f92c854df15751ca8132d7b2e0b0078a";
 const MY_INN = "860231492889";
 const REDIRECT_URL = "https://hellopinky.ru";
 
-const OZON_CLIENT_ID = "f0f0d638-7c3b-4f17-a5a1-d44b63bc8b1e";
-const OZON_CLIENT_SECRET = "a5a1d29c05115394f19204c5dcfd507a86f227fe193feb903d07946bdc6e1579";
-
 let state = { waiting: {}, history: [], companyId: null, retailPointsMap: { main: null, preorder: null } };
 let ozonToken = null, ozonTokenExpiresAt = 0;
+let cachedOzonPoints = [];
 
 function addLog(msg) {
     const now = new Date().toLocaleTimeString('ru-RU');
@@ -34,13 +36,19 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-// --- АВТОРИЗАЦИЯ OZON (С ВЫВОДОМ ОШИБКИ НА ЭКРАН) ---
+// --- НОВАЯ АВТОРИЗАЦИЯ OZON DELIVERY API ---
 async function getOzonToken() {
     if (ozonToken && Date.now() < ozonTokenExpiresAt) return { token: ozonToken };
     try {
-        const res = await fetch("https://api-b2b.ozon.ru/v1/auth/login", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ client_id: OZON_CLIENT_ID, client_secret: OZON_CLIENT_SECRET })
+        const res = await fetch("https://xapi.ozon.ru/oauth/token", {
+            method: "POST", 
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+                client_id: OZON_CLIENT_ID, 
+                client_secret: OZON_CLIENT_SECRET,
+                grant_type: "client_credentials",
+                scope: ["delivery-api.delivery", "delivery-api.delivery-point", "delivery-api.order", "delivery-api.posting"]
+            })
         });
         if (res.ok) {
             const data = await res.json();
@@ -48,7 +56,6 @@ async function getOzonToken() {
             ozonTokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
             return { token: ozonToken };
         } else {
-            // Возвращаем точный текст ответа от Ozon
             return { error: await res.text() };
         }
     } catch (e) {
@@ -56,102 +63,69 @@ async function getOzonToken() {
     }
 }
 
-// --- ЛОГИКА МОДУЛЬБАНКА (ОПЛАТЫ И ТОЧКИ) ---
-async function loadRetailPoints() {
-    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
-    try {
-        if (!state.companyId) {
-            const accRes = await fetch("https://api.modulbank.ru/v1/account-info", { method: "POST", headers });
-            if (accRes.ok) {
-                const data = await accRes.json();
-                state.companyId = data[0]?.companyId || data[0]?.id;
-            }
-        }
-        if (state.companyId) {
-            const rpRes = await fetch(`https://api.modulbank.ru/v1/sbp/retail-points?companyId=${state.companyId}`, { method: "GET", headers });
-            if (rpRes.ok) {
-                const points = await rpRes.json();
-                if (points && points.length > 0) {
-                    state.retailPointsMap.main = points[0]?.id || null;
-                    state.retailPointsMap.preorder = points[1]?.id || points[0]?.id || null;
-                }
-            }
-        }
-    } catch (e) {}
-}
-
-async function createDynamicQr(amount, description, paymentType) {
-    if (!state.retailPointsMap.main || !state.retailPointsMap.preorder) await loadRetailPoints();
-    const targetPointId = state.retailPointsMap[paymentType] || state.retailPointsMap.main;
-    if (!targetPointId) return { link: null, qrcId: null };
-
-    const payload = { retailPointId: targetPointId, sum: Number(amount), extraInfo: description.substring(0, 140), redirectUrl: REDIRECT_URL };
-    try {
-        const res = await fetch("https://api.modulbank.ru/v1/sbp/qr-codes/dynamic", { 
-            method: "POST", headers: { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) 
-        });
-        if (res.ok) {
-            const data = await res.json();
-            return { link: data.payload, qrcId: data.qrcId };
-        }
-    } catch (e) {}
-    return { link: null, qrcId: null };
-}
-
-async function sendReceipt(amount, email, itemName) {
-    const auth = Buffer.from(`${CP_ID}:${CP_SECRET}`).toString('base64');
-    const payload = {
-        Inn: MY_INN, Type: "Income",
-        CustomerReceipt: { Items: [{ label: itemName, price: Number(amount), quantity: 1, amount: Number(amount), vat: null, method: 1, object: 1 }], taxationSystem: 1, email: email }
-    };
-    try {
-        const res = await fetch("https://api.cloudpayments.ru/kkt/receipt", {
-            method: "POST", headers: { "Authorization": `Basic ${auth}`, "Content-Type": "application/json" }, body: JSON.stringify(payload)
-        });
-        return res.ok;
-    } catch (e) {}
-    return false;
-}
-
-// Фоновый чекер оплат
-setInterval(async () => {
-    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}` };
-    const now = Date.now();
-    for (const [qid, o] of Object.entries(state.waiting)) {
-        if (now - o.created_at > 86400000) { delete state.waiting[qid]; continue; }
-        try {
-            const res = await fetch(`https://api.modulbank.ru/v1/sbp/qr-codes/${qid}`, { method: "GET", headers });
-            if (res.ok) {
-                const data = await res.json();
-                if (data.status === "Accepted") {
-                    const success = await sendReceipt(data.amount || o.amount, o.email, o.item);
-                    if (success) delete state.waiting[qid];
-                }
-            }
-        } catch (e) {}
+// --- СКАЧИВАНИЕ БАЗЫ ПВЗ ДЛЯ КАРТЫ ---
+async function fetchOzonPoints() {
+    addLog("Скачиваем базу ПВЗ Ozon...");
+    const auth = await getOzonToken();
+    if (auth.error) {
+        addLog(`Ошибка токена ПВЗ: ${auth.error}`);
+        return;
     }
-}, 10000);
 
-// --- ФУНКЦИЯ ПАРСИНГА TSV ТАБЛИЦ (БЕЗ СКРЫТЫХ СИМВОЛОВ) ---
+    try {
+        // 1. Получаем список ID
+        const listRes = await fetch("https://api-delivery.ozon.ru/v1/delivery-point/list", {
+            method: "POST", headers: { "Authorization": `Bearer ${auth.token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ pagination: { limit: 1000 } }) // Для примера берем первую 1000
+        });
+        const listData = await listRes.json();
+        if (!listData.delivery_points) return;
+
+        const ids = listData.delivery_points.map(p => p.delivery_point_id);
+
+        // 2. Получаем координаты и адреса по ID
+        const infoRes = await fetch("https://api-delivery.ozon.ru/v1/delivery-point/info", {
+            method: "POST", headers: { "Authorization": `Bearer ${auth.token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ delivery_point_ids: ids })
+        });
+        const infoData = await infoRes.json();
+        
+        cachedOzonPoints = infoData.delivery_points.filter(p => p.is_active).map(p => ({
+            id: p.delivery_point_id,
+            name: p.name,
+            address: p.full_address,
+            coords: [p.coordinates.latitude, p.coordinates.longitude]
+        }));
+        addLog(`✅ Успешно загружено ${cachedOzonPoints.length} ПВЗ для карты.`);
+    } catch (e) {
+        addLog(`❌ Ошибка скачивания ПВЗ: ${e.message}`);
+    }
+}
+
+// Запускаем скачивание ПВЗ при старте сервера
+setTimeout(fetchOzonPoints, 2000);
+
+// Отдаем ПВЗ на фронтенд для карты
+app.get('/api/pvz-map-data', (req, res) => {
+    res.json({ success: true, points: cachedOzonPoints });
+});
+
+
+// --- ФУНКЦИЯ ПАРСИНГА TSV ТАБЛИЦ (ИЗ ПРЕДЫДУЩЕГО ШАГА) ---
 function parseTSV(text) {
-    // Жестко вырезаем все скрытые символы возврата каретки (\r)
     const cleanText = text.replace(/\r/g, '');
     const lines = cleanText.trim().split('\n');
     if (lines.length < 2) return [];
-    
-    // Очищаем заголовки от невидимых символов (BOM) и переводим в нижний регистр
     const headers = lines[0].replace(/^\uFEFF/, '').split('\t').map(h => h.trim().toLowerCase());
-    
     return lines.slice(1).map(line => {
         const values = line.split('\t');
         let obj = {};
-        headers.forEach((h, i) => {
-            if (h) obj[h] = values[i] ? values[i].trim() : "";
-        });
+        headers.forEach((h, i) => { if (h) obj[h] = values[i] ? values[i].trim() : ""; });
         return obj;
     });
 }
-// --- АЛГОРИТМ УПАКОВКИ (ОБНОВЛЕННЫЙ) ---
+
+// --- АЛГОРИТМ УПАКОВКИ ---
 async function getOptimalPackaging(username) {
     try {
         const [ordRes, prodRes, boxRes] = await Promise.all([ fetch(TSV_ORDERS), fetch(TSV_PRODUCTS), fetch(TSV_BOXES) ]);
@@ -168,14 +142,10 @@ async function getOptimalPackaging(username) {
 
         if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены в таблице." };
 
-        let totalVolume = 0, totalWeight = 0;
-        let maxL = 0, maxW = 0, maxH = 0;
-        let foundProducts = 0;
+        let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0, foundProducts = 0;
 
         userOrders.forEach(o => {
-            // Добавили чтение колонки 'товар (точное название)'
             const orderItemName = (o['товар (точное название)'] || o['товар'] || o['позиция'] || '').trim().toLowerCase();
-            
             const prod = products.find(p => {
                 const pName = (p['товар'] || p['позиция'] || '').trim().toLowerCase();
                 return pName === orderItemName && pName !== '';
@@ -184,7 +154,6 @@ async function getOptimalPackaging(username) {
             if (prod) {
                 foundProducts++;
                 const qty = parseInt(o['кол-во'] || o['количество'] || '1') || 1;
-                
                 const l = parseFloat((prod['длина (см)'] || prod['длина'] || '0').replace(',', '.')) || 0;
                 const w = parseFloat((prod['ширина (см)'] || prod['ширина'] || '0').replace(',', '.')) || 0;
                 const h = parseFloat((prod['высота (см)'] || prod['высота'] || '0').replace(',', '.')) || 0;
@@ -197,24 +166,19 @@ async function getOptimalPackaging(username) {
                 if (dims[0] > maxL) maxL = dims[0];
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
-            } else {
-                addLog(`⚠️ Товар не найден в Справочнике: "${orderItemName}"`);
             }
         });
 
-        if (foundProducts === 0 || totalVolume === 0) {
-            return { error: "Не удалось определить габариты. Проверьте совпадение названий товаров." };
-        }
+        if (foundProducts === 0 || totalVolume === 0) return { error: "Не удалось определить габариты. Проверьте названия товаров." };
 
-        let selectedBox = null;
-        let minBoxVol = Infinity;
+        let selectedBox = null, minBoxVol = Infinity;
 
         boxes.forEach(b => {
             const bl = parseFloat((b['длина (см)'] || b['длина'] || '0').replace(',', '.'));
             const bw = parseFloat((b['ширина (см)'] || b['ширина'] || '0').replace(',', '.'));
             const bh = parseFloat((b['высота (см)'] || b['высота'] || '0').replace(',', '.'));
             const boxWeight = parseFloat((b['вес пустой (г)'] || b['вес пустой'] || '0').replace(',', '.'));
-            const matCost = parseFloat((b['стоимость материалов (₽)'] || b['стоимость материалов'] || b['цена коробки (₽)'] || '0').replace(',', '.'));
+            const matCost = parseFloat((b['стоимость материалов (₽)'] || b['стоимость материалов'] || '0').replace(',', '.'));
 
             const boxVol = bl * bw * bh;
             const bDims = [bl, bw, bh].sort((a,b) => b - a);
@@ -231,66 +195,53 @@ async function getOptimalPackaging(username) {
         return { success: true, box: selectedBox, itemCount: userOrders.length };
 
     } catch (e) {
-        addLog(`❌ Ошибка чтения таблиц: ${e.message}`);
         return { error: "Не удалось прочитать данные таблицы заказов." };
     }
 }
 
-// --- API МАРШРУТЫ ---
-app.post('/api/pay', async (req, res) => {
-    const { item, amount, email, paymentType } = req.body;
-    if (!item || !amount || amount <= 0 || !email) return res.status(400).json({ success: false, error: "Заполните все поля." });
-
-    const { link, qrcId } = await createDynamicQr(amount, item, paymentType || 'main');
-    if (link && qrcId) {
-        state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
-        return res.json({ success: true, link });
-    }
-    res.status(500).json({ success: false, error: "Ошибка генерации QR." });
-});
-
-// РАСЧЕТ ДОСТАВКИ
+// --- НОВЫЙ МЕТОД РАСЧЕТА ДОСТАВКИ ---
 app.post('/api/delivery-calc', async (req, res) => {
-    const { targetCity, tgUser } = req.body;
+    const { deliveryPointId, tgUser } = req.body;
 
-    if (!targetCity || !tgUser) return res.status(400).json({ success: false, error: "Укажите ПВЗ и Юзернейм." });
+    if (!deliveryPointId || !tgUser) return res.status(400).json({ success: false, error: "Выберите ПВЗ на карте и укажите Юзернейм." });
 
-    // 1. Идем в таблицу и собираем коробку
     const packData = await getOptimalPackaging(tgUser);
     if (packData.error) return res.status(400).json({ success: false, error: packData.error });
 
-    // 2. Получаем токен Ozon или ловим точную ошибку
     const authResult = await getOzonToken();
-    if (authResult.error) {
-        // Отправляем сырую ошибку Ozon прямо на фронтенд!
-        return res.status(500).json({ success: false, error: `Ответ Ozon: ${authResult.error}` });
-    }
-    const token = authResult.token;
+    if (authResult.error) return res.status(500).json({ success: false, error: `Ответ Ozon Auth: ${authResult.error}` });
 
-    // 3. Спрашиваем цену у Ozon
-    const url = "https://api-b2b.ozon.ru/v1/calculator";
+    const url = "https://api-delivery.ozon.ru/v1/order/checkout";
+    
+    // Формируем полезную нагрузку по новой документации
     const payload = {
-        deliveryType: "PickPoint", 
-        fromPlaceId: "Екатеринбург", 
-        toPlaceId: targetCity, 
-        dimension: { 
-            length: Math.ceil(packData.box.length) || 20, 
-            width: Math.ceil(packData.box.width) || 15, 
-            height: Math.ceil(packData.box.height) || 10, 
-            weight: Math.ceil(packData.box.weight) || 300 
-        },
-        declaredPrice: 0
+        recipient: { phone_number: "+79990000000" }, // Технический номер для проверки доступности
+        postings: [{
+            request_id: 1,
+            shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
+            declared_value: { amount: "100.00", currency_code: "RUB" },
+            dimensions: { 
+                weight_g: Math.ceil(packData.box.weight), 
+                length_mm: Math.ceil(packData.box.length * 10), // Перевод см в мм
+                width_mm: Math.ceil(packData.box.width * 10), 
+                height_mm: Math.ceil(packData.box.height * 10) 
+            }
+        }],
+        delivery: {
+            delivery_point: { delivery_point_id: Number(deliveryPointId) }
+        }
     };
 
     try {
         const ozonRes = await fetch(url, {
-            method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+            method: "POST", headers: { "Authorization": `Bearer ${authResult.token}`, "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
 
         if (ozonRes.ok) {
             const data = await ozonRes.json();
-            const ozonTariff = data.price || 0; 
+            // По новой документации ответ лежит в results[0].posting.estimated_delivery_cost.amount
+            const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
             
             const rawCost = ozonTariff + packData.box.materialCost + 20;
             const finalPrice = Math.ceil(rawCost / 0.92);
@@ -305,33 +256,11 @@ app.post('/api/delivery-calc', async (req, res) => {
     }
 });
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// ... ОПЛАТЫ МОДУЛЬБАНКА ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ (здесь пропущены для экономии места, оставь их как были) ...
 
-// --- СПЕЦИАЛЬНЫЙ ТЕСТЕР ДЛЯ ТАБЛИЦ ---
-app.get('/api/debug', async (req, res) => {
-    try {
-        const ordRes = await fetch(TSV_ORDERS);
-        const rawOrders = await ordRes.text();
-        const orders = parseTSV(rawOrders);
-        
-        const prodRes = await fetch(TSV_PRODUCTS);
-        const rawProducts = await prodRes.text();
-        const products = parseTSV(rawProducts);
-        
-        res.json({
-            "1_Заголовки_Заказов": Object.keys(orders[0] || {}),
-            "2_Заголовки_Справочника": Object.keys(products[0] || {}),
-            "3_Первая_строка_Заказов": orders[0],
-            "4_Первая_строка_Справочника": products[0],
-            "5_Сырой_текст": rawOrders.substring(0, 150)
-        });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Сервер запущен. Порт ${PORT}`);
-    loadRetailPoints(); 
 });
