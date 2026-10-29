@@ -44,11 +44,16 @@
           <input type="email" id="emailInput" class="form-control" placeholder="client@hellopinky.ru" required />
         </div>
 
-        <!-- БЛОК ПОЛЕЙ ДОСТАВКИ (Скрыт по умолчанию) -->
+        <!-- БЛОК ПОЛЕЙ ДОСТАВКИ -->
         <div id="deliveryFields" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px dashed #fbe6f0;">
+          
           <div class="form-group">
-            <label for="cityInput">Город получателя</label>
-            <input type="text" id="cityInput" class="form-control" placeholder="Например: Москва" onchange="calculateDelivery()" />
+            <label>Пункт выдачи Ozon</label>
+            <button type="button" id="openOzonMapBtn" class="form-control" style="background: #fbe6f0; color: #b05c8a; border: 1px dashed #b05c8a; cursor: pointer; text-align: center; padding: 12px; font-weight: bold; transition: 0.2s;" onclick="openOzonWidget()">
+              📍 Выбрать пункт на карте
+            </button>
+            <input type="hidden" id="pvzIdInput" value="" />
+            <div id="selectedPvzAddress" style="font-size: 13px; margin-top: 10px; color: #333; display: none;"></div>
           </div>
           
           <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 14px; color: #b05c8a; margin-top: 15px; padding: 12px; background: #fbe6f0; border-radius: 8px;">
@@ -56,9 +61,16 @@
           </div>
         </div>
 
-        <div class="total-box">
-          <span class="total-box-label">Итого:</span>
-          <span class="total-box-amount" id="totalAmountDisplay">0 ₽</span>
+        <!-- Всплывающее окно (Модалка) для карты Ozon -->
+        <div id="ozonWidgetModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999;">
+           <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 95%; max-width: 900px; height: 85%; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.3);">
+              <div style="padding: 15px; background: #fff; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;">
+                 <strong style="color: #333;">Выберите пункт выдачи</strong>
+                 <button type="button" onclick="closeOzonWidget()" style="padding: 6px 12px; background: #ff4d85; color: white; border: none; border-radius: 6px; cursor: pointer;">Закрыть</button>
+              </div>
+              <!-- Сюда встраивается iframe виджета Ozon -->
+              <div id="ozonMapContainer" style="width: 100%; height: calc(100% - 50px); background: #fafafa;"></div>
+           </div>
         </div>
 
         <button type="submit" class="btn btn-primary" id="submitBtn">
