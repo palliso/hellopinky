@@ -20,13 +20,13 @@
     <main class="pay-card">
       <form id="paymentForm" onsubmit="handlePayment(event)">
         
-        <!-- БЛОК ВКЛАДОК -->
+        <!-- БЛОК ВКЛАДОК (Исправлены атрибуты type и добавлены data-type) -->
         <div class="tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
-          <button id="tab-main" class="tab-btn active" onclick="switchTab('main')" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer;">Основные оплаты</button>
+          <button type="button" class="tab-btn active" data-type="main" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer;">Основные оплаты</button>
           
-          <button id="tab-preorder" class="tab-btn" onclick="switchTab('preorder')" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer;">Предзаказы</button>
+          <button type="button" class="tab-btn" data-type="preorder" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer;">Предзаказы</button>
           
-          <button id="tab-delivery" class="tab-btn" onclick="switchTab('delivery')" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer;">Доставка Ozon</button>
+          <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer;">Доставка Ozon</button>
         </div>
 
         <div class="form-group">
