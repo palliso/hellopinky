@@ -239,6 +239,15 @@ async function getOptimalPackaging(username) {
     }
 }
 
+        if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
+        return { success: true, box: selectedBox, itemCount: userOrders.length };
+
+    } catch (e) {
+        addLog(`❌ Ошибка чтения таблиц: ${e.message}`);
+        return { error: "Не удалось прочитать данные таблицы заказов." };
+    }
+}
+
 // --- API МАРШРУТЫ ---
 app.post('/api/pay', async (req, res) => {
     const { item, amount, email, paymentType } = req.body;
