@@ -11,24 +11,29 @@ app.use(express.json());
 // Раздаем статические файлы (HTML, CSS, JS) из папки public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Твои реальные боевые ключи
+// --- КЛЮЧИ МОДУЛЬБАНКА И CLOUDPAYMENTS ---
 const MODUL_TOKEN = "ZWU1MzQzZTctYmUzNi00YjlkLWI3MGMtNDEzYjM0YWYyNDA1OWMzZDlmMTgtOWNjNi00N2E1LTkwMzktNjI0NzIxODRhMGJi";
 const CP_ID = "pk_f36ba0fb530c9daf8fb7b97ec5dee";
 const CP_SECRET = "f92c854df15751ca8132d7b2e0b0078a";
 const MY_INN = "860231492889";
 const REDIRECT_URL = "https://hellopinky.ru";
 
-// Конфигурация торговых точек для разных вкладок
-// Пока используем один рабочий ID для проверки обеих кнопок
-const RETAIL_POINTS = {
-    main: "8a838daf-cd51-474a-b444-854e8f8263b6", 
-    preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
-};
+// --- КЛЮЧИ OZON ДОСТАВКИ ---
+const OZON_CLIENT_ID = "f0f0d638-7c3b-4f17-a5a1-d44b63bc8b1e";
+const OZON_CLIENT_SECRET = "a5a1d29c05115394f19204c5dcfd507a86f227fe193feb903d07946bdc6e1579";
 
 let state = {
     waiting: {},
-    history: []
+    history: [],
+    companyId: null,
+    retailPointsMap: {
+        main: null,
+        preorder: null
+    }
 };
+
+let ozonToken = null;
+let ozonTokenExpiresAt = 0;
 
 function addLog(msg) {
     const now = new Date().toLocaleTimeString('ru-RU');
@@ -37,11 +42,83 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-async function createDynamicQr(amount, description, retailPointId) {
+// --- ЛОГИКА OZON ДОСТАВКИ ---
+async function getOzonToken() {
+    if (ozonToken && Date.now() < ozonTokenExpiresAt) {
+        return ozonToken;
+    }
+
+    const url = "https://api-b2b.ozon.ru/v1/auth/login";
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                client_id: OZON_CLIENT_ID,
+                client_secret: OZON_CLIENT_SECRET
+            })
+        });
+        
+        if (res.ok) {
+            const data = await res.json();
+            ozonToken = data.access_token;
+            // Сохраняем токен и вычитаем 60 секунд для запаса надежности
+            ozonTokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
+            addLog("✅ Успешно получен токен Ozon Доставки");
+            return ozonToken;
+        } else {
+            addLog(`❌ Ошибка авторизации Ozon: ${await res.text()}`);
+        }
+    } catch (e) {
+        addLog(`❌ Сетевая ошибка Ozon Auth: ${e.message}`);
+    }
+    return null;
+}
+
+// --- ЛОГИКА МОДУЛЬБАНКА (ОПЛАТЫ) ---
+async function loadRetailPoints() {
+    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
+    try {
+        if (!state.companyId) {
+            const accRes = await fetch("https://api.modulbank.ru/v1/account-info", { method: "POST", headers });
+            if (accRes.ok) {
+                const data = await accRes.json();
+                state.companyId = data[0]?.companyId || data[0]?.id;
+            }
+        }
+        if (state.companyId) {
+            const rpRes = await fetch(`https://api.modulbank.ru/v1/sbp/retail-points?companyId=${state.companyId}`, { method: "GET", headers });
+            if (rpRes.ok) {
+                const points = await rpRes.json();
+                console.log("📌 ДОСТУПНЫЕ ТОРГОВЫЕ ТОЧКИ СБП:", JSON.stringify(points, null, 2));
+                
+                if (points && points.length > 0) {
+                    state.retailPointsMap.main = points[0]?.id || null;
+                    state.retailPointsMap.preorder = points[1]?.id || points[0]?.id || null;
+                }
+            }
+        }
+    } catch (e) {
+        addLog(`❌ Ошибка получения точек: ${e.message}`);
+    }
+}
+
+async function createDynamicQr(amount, description, paymentType) {
+    if (!state.retailPointsMap.main || !state.retailPointsMap.preorder) {
+        await loadRetailPoints();
+    }
+
+    const targetPointId = state.retailPointsMap[paymentType] || state.retailPointsMap.main;
+
+    if (!targetPointId) {
+        addLog(`❌ Не найден retailPointId для типа оплаты: ${paymentType}`);
+        return { link: null, qrcId: null };
+    }
+
     const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
     const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
     const payload = {
-        retailPointId: retailPointId,
+        retailPointId: targetPointId,
         sum: Number(amount),
         extraInfo: description.substring(0, 140),
         redirectUrl: REDIRECT_URL
@@ -119,29 +196,78 @@ setInterval(async () => {
     }
 }, 10000);
 
-// API маршруты
+// --- API МАРШРУТЫ ---
+
+// 1. Оплата СБП
 app.post('/api/pay', async (req, res) => {
-    // ТЕПЕРЬ СЕРВЕР ПОНИМАЕТ paymentType
     const { item, amount, email, paymentType } = req.body;
-    
     if (!item || !amount || amount <= 0 || !email) {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    // Подставляем нужный ID
-    const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
-
-    const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
-    
+    const { link, qrcId } = await createDynamicQr(amount, item, paymentType || 'main');
     if (link && qrcId) {
         state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
-        addLog(`🌸 Создан СБП QR (${paymentType}) для ${email} на сумму ${amount} ₽ (${item})`);
+        addLog(`🌸 Создан СБП QR (${paymentType || 'main'}) для ${email} на сумму ${amount} ₽ (${item})`);
         return res.json({ success: true, link });
     }
 
     res.status(500).json({ success: false, error: "Ошибка генерации QR в Модульбанке. Проверьте логи сервера." });
 });
 
+// 2. Расчет доставки Ozon
+app.post('/api/delivery-calc', async (req, res) => {
+    const { targetCity, cartValue } = req.body;
+
+    if (!targetCity) {
+        return res.status(400).json({ success: false, error: "Не указан город" });
+    }
+
+    const token = await getOzonToken();
+    if (!token) {
+        return res.status(500).json({ success: false, error: "Ошибка авторизации Ozon" });
+    }
+
+    const url = "https://api-b2b.ozon.ru/v1/calculator";
+    const payload = {
+        deliveryType: "PickPoint", // Доставка до ПВЗ
+        fromPlaceId: "Екатеринбург", // Ваш город отправки
+        toPlaceId: targetCity, 
+        dimension: {
+            length: 20,
+            width: 15,
+            height: 10,
+            weight: 300 // Базовый вес в граммах 
+        },
+        declaredPrice: cartValue || 0
+    };
+
+    try {
+        const ozonRes = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (ozonRes.ok) {
+            const data = await ozonRes.json();
+            const price = data.price || 0; 
+            res.json({ success: true, deliveryPrice: Math.ceil(price), payloadUsed: payload });
+        } else {
+            const errText = await ozonRes.text();
+            addLog(`❌ Ошибка расчета Ozon (${ozonRes.status}): ${errText}`);
+            res.status(500).json({ success: false, error: "Ошибка тарификации Ozon" });
+        }
+    } catch (e) {
+        addLog(`❌ Сетевая ошибка при расчете Ozon: ${e.message}`);
+        res.status(500).json({ success: false, error: "Сетевая ошибка" });
+    }
+});
+
+// 3. Логи для мониторинга
 app.get('/api/logs', (req, res) => {
     res.json({ waiting: Object.keys(state.waiting).length, history: state.history });
 });
@@ -154,4 +280,5 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Сервер запущен и слушает порт ${PORT}`);
+    loadRetailPoints(); // Подтягиваем точки Модульбанка при старте
 });
