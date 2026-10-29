@@ -1,30 +1,58 @@
 let currentPaymentType = 'main';
+let currentDeliveryCost = 0;
 
 document.addEventListener('DOMContentLoaded', () => {
   const tabBtns = document.querySelectorAll('.tab-btn');
+  const deliveryFields = document.getElementById('deliveryFields');
+  const cityInput = document.getElementById('cityInput');
+  const deliveryInfoBox = document.getElementById('deliveryInfoBox');
+
   tabBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
+      // 1. Переключаем активный класс
       tabBtns.forEach(b => b.classList.remove('active'));
       e.target.classList.add('active');
       currentPaymentType = e.target.getAttribute('data-type');
+
+      // 2. Показываем или скрываем поля доставки
+      if (currentPaymentType === 'delivery') {
+        if (deliveryFields) deliveryFields.style.display = 'block';
+      } else {
+        if (deliveryFields) deliveryFields.style.display = 'none';
+        // Сбрасываем расчеты при уходе с вкладки доставки
+        currentDeliveryCost = 0;
+        if (cityInput) cityInput.value = '';
+        if (deliveryInfoBox) deliveryInfoBox.style.display = 'none';
+      }
+      
+      updateTotal();
     });
   });
+  
+  updateTotal();
 });
 
+// Единая функция обновления суммы (Товар + Доставка)
 function updateTotal() {
   const amount = Number(document.getElementById('amountInput').value) || 0;
-  document.getElementById('totalAmountDisplay').textContent =
-    `${amount.toLocaleString('ru-RU')} ₽`;
+  const total = amount + currentDeliveryCost;
+  const display = document.getElementById('totalAmountDisplay');
+  if (display) {
+    display.textContent = `${total.toLocaleString('ru-RU')} ₽`;
+  }
 }
 
 async function handlePayment(e) {
   e.preventDefault();
 
   const item = document.getElementById('itemInput').value.trim();
-  const amount = Number(document.getElementById('amountInput').value) || 0;
+  const baseAmount = Number(document.getElementById('amountInput').value) || 0;
   const email = document.getElementById('emailInput').value.trim();
+  
+  // Итоговая сумма для списания (включает логистику, если выбрана доставка)
+  const totalAmount = baseAmount + currentDeliveryCost;
 
-  if (!item || amount <= 0 || !email.includes('@')) {
+  if (!item || totalAmount <= 0 || !email.includes('@')) {
     showToast('Заполните позиции, сумму больше 0 ₽ и корректный E-mail 🌸');
     return;
   }
@@ -37,7 +65,8 @@ async function handlePayment(e) {
     const response = await fetch('/api/pay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item, amount, email, paymentType: currentPaymentType })
+      // Отправляем на сервер общую сумму totalAmount
+      body: JSON.stringify({ item, amount: totalAmount, email, paymentType: currentPaymentType })
     });
 
     const data = await response.json();
@@ -61,6 +90,7 @@ async function handlePayment(e) {
 
 function showToast(msg) {
   const box = document.getElementById('toastBox');
+  if (!box) return;
   box.textContent = msg;
   box.style.display = 'block';
   clearTimeout(window._toastTimer);
@@ -69,8 +99,7 @@ function showToast(msg) {
   }, 3500);
 }
 
-let currentDeliveryCost = 0;
-
+// Расчет логистики Ozon
 async function calculateDelivery() {
   const city = document.getElementById('cityInput').value.trim();
   const amount = Number(document.getElementById('amountInput').value) || 0;
@@ -99,20 +128,14 @@ async function calculateDelivery() {
     if (data.success) {
       currentDeliveryCost = data.deliveryPrice;
       costDisplay.textContent = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽`;
-      updateTotal(); 
     } else {
       costDisplay.textContent = 'Ошибка расчета';
       currentDeliveryCost = 0;
     }
   } catch (err) {
     costDisplay.textContent = 'Ошибка сети';
+    currentDeliveryCost = 0;
   }
+  
+  updateTotal();
 }
-
-function updateTotal() {
-  const amount = Number(document.getElementById('amountInput').value) || 0;
-  const total = amount + currentDeliveryCost;
-  document.getElementById('totalAmountDisplay').textContent = `${total.toLocaleString('ru-RU')} ₽`;
-}
-
-updateTotal();
