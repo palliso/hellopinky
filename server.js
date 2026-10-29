@@ -34,9 +34,9 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-// --- АВТОРИЗАЦИЯ OZON ---
+// --- АВТОРИЗАЦИЯ OZON (С ВЫВОДОМ ОШИБКИ НА ЭКРАН) ---
 async function getOzonToken() {
-    if (ozonToken && Date.now() < ozonTokenExpiresAt) return ozonToken;
+    if (ozonToken && Date.now() < ozonTokenExpiresAt) return { token: ozonToken };
     try {
         const res = await fetch("https://api-b2b.ozon.ru/v1/auth/login", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -46,10 +46,14 @@ async function getOzonToken() {
             const data = await res.json();
             ozonToken = data.access_token;
             ozonTokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
-            return ozonToken;
+            return { token: ozonToken };
+        } else {
+            // Возвращаем точный текст ответа от Ozon
+            return { error: await res.text() };
         }
-    } catch (e) {}
-    return null;
+    } catch (e) {
+        return { error: e.message };
+    }
 }
 
 // --- ЛОГИКА МОДУЛЬБАНКА (ОПЛАТЫ И ТОЧКИ) ---
@@ -255,10 +259,15 @@ app.post('/api/delivery-calc', async (req, res) => {
     const packData = await getOptimalPackaging(tgUser);
     if (packData.error) return res.status(400).json({ success: false, error: packData.error });
 
-    const token = await getOzonToken();
-    if (!token) return res.status(500).json({ success: false, error: "Ошибка авторизации Ozon." });
+    // 2. Получаем токен Ozon или ловим точную ошибку
+    const authResult = await getOzonToken();
+    if (authResult.error) {
+        // Отправляем сырую ошибку Ozon прямо на фронтенд!
+        return res.status(500).json({ success: false, error: `Ответ Ozon: ${authResult.error}` });
+    }
+    const token = authResult.token;
 
-    // 2. Спрашиваем цену у Ozon
+    // 3. Спрашиваем цену у Ozon
     const url = "https://api-b2b.ozon.ru/v1/calculator";
     const payload = {
         deliveryType: "PickPoint", 
@@ -283,15 +292,13 @@ app.post('/api/delivery-calc', async (req, res) => {
             const data = await ozonRes.json();
             const ozonTariff = data.price || 0; 
             
-            // 3. ЮНИТ-ЭКОНОМИКА: Озон + Коробка + 20р пупырка. И всё это делим на 0.92 для компенсации 8% налога
             const rawCost = ozonTariff + packData.box.materialCost + 20;
             const finalPrice = Math.ceil(rawCost / 0.92);
 
             res.json({ success: true, deliveryPrice: finalPrice });
         } else {
             const errText = await ozonRes.text();
-            addLog(`❌ Ошибка расчета Ozon: ${errText}`);
-            res.status(500).json({ success: false, error: "ПВЗ не найден. Уточните адрес." });
+            res.status(500).json({ success: false, error: `Ошибка калькулятора: ${errText}` });
         }
     } catch (e) {
         res.status(500).json({ success: false, error: "Сетевая ошибка расчета." });
