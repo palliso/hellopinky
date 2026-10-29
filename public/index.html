@@ -20,9 +20,13 @@
     <main class="pay-card">
       <form id="paymentForm" onsubmit="handlePayment(event)">
         
-        <div class="tabs-wrapper">
-          <button type="button" class="tab-btn active" data-type="main">Основные оплаты</button>
-          <button type="button" class="tab-btn" data-type="preorder">Предзаказы</button>
+        <!-- БЛОК ВКЛАДОК -->
+        <div class="tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
+          <button id="tab-main" class="tab-btn active" onclick="switchTab('main')" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer;">Основные оплаты</button>
+          
+          <button id="tab-preorder" class="tab-btn" onclick="switchTab('preorder')" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer;">Предзаказы</button>
+          
+          <button id="tab-delivery" class="tab-btn" onclick="switchTab('delivery')" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer;">Доставка Ozon</button>
         </div>
 
         <div class="form-group">
@@ -40,23 +44,21 @@
           <input type="email" id="emailInput" class="form-control" placeholder="client@hellopinky.ru" required />
         </div>
 
+        <!-- БЛОК ПОЛЕЙ ДОСТАВКИ (Скрыт по умолчанию) -->
+        <div id="deliveryFields" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px dashed #fbe6f0;">
+          <div class="form-group">
+            <label for="cityInput">Город получателя</label>
+            <input type="text" id="cityInput" class="form-control" placeholder="Например: Москва" onchange="calculateDelivery()" />
+          </div>
+          
+          <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 14px; color: #b05c8a; margin-top: 15px; padding: 12px; background: #fbe6f0; border-radius: 8px;">
+            🚚 Стоимость логистики: <span id="deliveryCostDisplay">считаем...</span>
+          </div>
+        </div>
+
         <div class="total-box">
           <span class="total-box-label">Итого:</span>
           <span class="total-box-amount" id="totalAmountDisplay">0 ₽</span>
-        </div>
-
-        <!-- Новый независимый блок доставки -->
-        <div class="delivery-block" style="margin-top: 20px; padding: 20px; border: 2px solid #fbe6f0; border-radius: 12px; background-color: #fff;">
-            <h3 style="margin-top: 0; font-size: 16px; color: #333; margin-bottom: 15px;">📦 Доставка Ozon для бизнеса</h3>
-            
-            <div class="form-group" style="margin-bottom: 0;">
-                <label for="cityInput">Город получателя</label>
-                <input type="text" id="cityInput" class="form-control" placeholder="Например: Москва" onchange="calculateDelivery()" />
-            </div>
-            
-            <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 14px; font-weight: 500; color: #b05c8a; margin-top: 15px; padding: 12px; background: #fbe6f0; border-radius: 8px;">
-                🚚 Расчетная стоимость: <span id="deliveryCostDisplay">считаем...</span>
-            </div>
         </div>
 
         <button type="submit" class="btn btn-primary" id="submitBtn">
