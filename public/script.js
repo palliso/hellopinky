@@ -1,32 +1,26 @@
 let currentPaymentType = 'main';
 let currentDeliveryCost = 0;
-let selectedPvzId = null;
 
 document.addEventListener('DOMContentLoaded', () => {
   const tabBtns = document.querySelectorAll('.tab-btn');
-  
-  // Группы полей
   const productFields = document.getElementById('productFields');
   const deliveryFields = document.getElementById('deliveryFields');
-  
-  // Сами инпуты
   const itemInput = document.getElementById('itemInput');
   const amountInput = document.getElementById('amountInput');
   const fioInput = document.getElementById('fioInput');
   const phoneInput = document.getElementById('phoneInput');
+  const pvzAddressInput = document.getElementById('pvzAddressInput');
 
   tabBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault(); 
       
-      // 1. Сбрасываем цвета всех кнопок
       tabBtns.forEach(b => {
         b.classList.remove('active');
         b.style.background = 'transparent';
         b.style.color = '#ff4d85';
       });
       
-      // 2. Красим нажатую кнопку
       const clickedBtn = e.currentTarget;
       clickedBtn.classList.add('active');
       clickedBtn.style.background = '#ff4d85';
@@ -34,25 +28,22 @@ document.addEventListener('DOMContentLoaded', () => {
       
       currentPaymentType = clickedBtn.getAttribute('data-type');
 
-      // 3. Переключаем видимость и обязательность полей
       if (currentPaymentType === 'delivery') {
         productFields.style.display = 'none';
         deliveryFields.style.display = 'block';
-        
-        // Убираем обязательность с товаров, вешаем на доставку
         itemInput.required = false;
         amountInput.required = false;
         fioInput.required = true;
         phoneInput.required = true;
+        pvzAddressInput.required = true;
       } else {
         productFields.style.display = 'block';
         deliveryFields.style.display = 'none';
-        
-        // Возвращаем обязательность товарам, снимаем с доставки
         itemInput.required = true;
         amountInput.required = true;
         fioInput.required = false;
         phoneInput.required = false;
+        pvzAddressInput.required = false;
       }
       
       updateTotal();
@@ -62,19 +53,55 @@ document.addEventListener('DOMContentLoaded', () => {
   updateTotal();
 });
 
-// Единая функция обновления суммы
 function updateTotal() {
   const display = document.getElementById('totalAmountDisplay');
   if (!display) return;
 
   if (currentPaymentType === 'delivery') {
-    // На вкладке доставки показываем стоимость логистики
     display.textContent = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽`;
   } else {
-    // На обычных вкладках показываем сумму из поля
     const amount = Number(document.getElementById('amountInput').value) || 0;
     display.textContent = `${amount.toLocaleString('ru-RU')} ₽`;
   }
+}
+
+async function calculateDelivery() {
+    const address = document.getElementById('pvzAddressInput').value.trim();
+    const costBox = document.getElementById('deliveryInfoBox');
+    const costDisplay = document.getElementById('deliveryCostDisplay');
+    
+    if (!address) {
+        costBox.style.display = 'none';
+        currentDeliveryCost = 0;
+        updateTotal();
+        return;
+    }
+    
+    costBox.style.display = 'block';
+    costDisplay.textContent = 'считаем через Ozon...';
+
+    try {
+        const response = await fetch('/api/delivery-calc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ targetCity: address, cartValue: 0 })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            currentDeliveryCost = data.deliveryPrice;
+            costDisplay.textContent = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽`;
+        } else {
+            costDisplay.textContent = 'Ошибка расчета сервером Ozon';
+            currentDeliveryCost = 0;
+        }
+    } catch (err) {
+        costDisplay.textContent = 'Ошибка сети';
+        currentDeliveryCost = 0;
+    }
+    
+    updateTotal();
 }
 
 async function handlePayment(e) {
@@ -85,20 +112,20 @@ async function handlePayment(e) {
   let finalItem = "";
   let finalAmount = 0;
 
-  // Формируем данные в зависимости от вкладки
   if (currentPaymentType === 'delivery') {
     const fio = document.getElementById('fioInput').value.trim();
     const phone = document.getElementById('phoneInput').value.trim();
+    const address = document.getElementById('pvzAddressInput').value.trim();
     
-    if (!fio || !phone || !selectedPvzId) {
-        showToast('Заполните ФИО, телефон и выберите ПВЗ на карте 🌸');
+    if (!fio || !phone || !address) {
+        showToast('Заполните ФИО, телефон и адрес ПВЗ 🌸');
         return;
     }
     if (currentDeliveryCost <= 0) {
-        showToast('Стоимость доставки еще не рассчитана.');
+        showToast('Дождитесь расчета стоимости доставки.');
         return;
     }
-    finalItem = `Доставка Ozon (${fio}, ПВЗ: ${selectedPvzId})`;
+    finalItem = `Доставка (${fio}, ${address})`;
     finalAmount = currentDeliveryCost;
   } else {
     finalItem = document.getElementById('itemInput').value.trim();
@@ -159,43 +186,4 @@ function showToast(msg) {
   window._toastTimer = setTimeout(() => {
     box.style.display = 'none';
   }, 3500);
-}
-
-// Заглушка для карты Ozon
-function openOzonWidget() {
-    document.getElementById('ozonWidgetModal').style.display = 'block';
-    
-    // Временная имитация выбора (потом заменим на скрипт виджета Ozon)
-    setTimeout(() => {
-        handlePvzSelection({
-            pvzId: "12345-TEST",
-            address: "г. Тест, ул. Тестовая, 1",
-            price: 350
-        });
-    }, 1500);
-}
-
-function closeOzonWidget() {
-    document.getElementById('ozonWidgetModal').style.display = 'none';
-}
-
-function handlePvzSelection(pvzData) {
-    selectedPvzId = pvzData.pvzId;
-    currentDeliveryCost = pvzData.price;
-    
-    const addressBox = document.getElementById('selectedPvzAddress');
-    const costBox = document.getElementById('deliveryInfoBox');
-    
-    if (addressBox) {
-        addressBox.style.display = 'block';
-        addressBox.textContent = `Выбран ПВЗ: ${pvzData.address}`;
-    }
-    
-    if (costBox) {
-        costBox.style.display = 'block';
-        document.getElementById('deliveryCostDisplay').textContent = currentDeliveryCost.toLocaleString('ru-RU');
-    }
-    
-    closeOzonWidget();
-    updateTotal();
 }
