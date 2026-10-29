@@ -128,9 +128,11 @@ setInterval(async () => {
     }
 }, 10000);
 
-// --- ФУНКЦИЯ ПАРСИНГА TSV ТАБЛИЦ (БРОНЕБОЙНАЯ) ---
+// --- ФУНКЦИЯ ПАРСИНГА TSV ТАБЛИЦ (БЕЗ СКРЫТЫХ СИМВОЛОВ) ---
 function parseTSV(text) {
-    const lines = text.trim().split('\n');
+    // Жестко вырезаем все скрытые символы возврата каретки (\r)
+    const cleanText = text.replace(/\r/g, '');
+    const lines = cleanText.trim().split('\n');
     if (lines.length < 2) return [];
     
     // Очищаем заголовки от невидимых символов (BOM) и переводим в нижний регистр
