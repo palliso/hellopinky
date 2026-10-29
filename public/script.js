@@ -69,4 +69,50 @@ function showToast(msg) {
   }, 3500);
 }
 
+let currentDeliveryCost = 0;
+
+async function calculateDelivery() {
+  const city = document.getElementById('cityInput').value.trim();
+  const amount = Number(document.getElementById('amountInput').value) || 0;
+  const infoBox = document.getElementById('deliveryInfoBox');
+  const costDisplay = document.getElementById('deliveryCostDisplay');
+
+  if (!city) {
+    infoBox.style.display = 'none';
+    currentDeliveryCost = 0;
+    updateTotal();
+    return;
+  }
+
+  infoBox.style.display = 'block';
+  costDisplay.textContent = 'считаем...';
+
+  try {
+    const response = await fetch('/api/delivery-calc', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetCity: city, cartValue: amount })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      currentDeliveryCost = data.deliveryPrice;
+      costDisplay.textContent = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽`;
+      updateTotal(); 
+    } else {
+      costDisplay.textContent = 'Ошибка расчета';
+      currentDeliveryCost = 0;
+    }
+  } catch (err) {
+    costDisplay.textContent = 'Ошибка сети';
+  }
+}
+
+function updateTotal() {
+  const amount = Number(document.getElementById('amountInput').value) || 0;
+  const total = amount + currentDeliveryCost;
+  document.getElementById('totalAmountDisplay').textContent = `${total.toLocaleString('ru-RU')} ₽`;
+}
+
 updateTotal();
