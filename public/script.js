@@ -9,17 +9,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
   tabBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
-      // 1. Переключаем активный класс
-      tabBtns.forEach(b => b.classList.remove('active'));
+      // 1. Сбрасываем цвета всех кнопок
+      tabBtns.forEach(b => {
+        b.classList.remove('active');
+        b.style.background = 'transparent';
+        b.style.color = '#ff4d85';
+      });
+      
+      // 2. Красим нажатую кнопку
       e.target.classList.add('active');
+      e.target.style.background = '#ff4d85';
+      e.target.style.color = 'white';
+      
       currentPaymentType = e.target.getAttribute('data-type');
 
-      // 2. Показываем или скрываем поля доставки
+      // 3. Показываем или скрываем поля доставки
       if (currentPaymentType === 'delivery') {
         if (deliveryFields) deliveryFields.style.display = 'block';
       } else {
         if (deliveryFields) deliveryFields.style.display = 'none';
-        // Сбрасываем расчеты при уходе с вкладки доставки
         currentDeliveryCost = 0;
         if (cityInput) cityInput.value = '';
         if (deliveryInfoBox) deliveryInfoBox.style.display = 'none';
@@ -49,7 +57,6 @@ async function handlePayment(e) {
   const baseAmount = Number(document.getElementById('amountInput').value) || 0;
   const email = document.getElementById('emailInput').value.trim();
   
-  // Итоговая сумма для списания (включает логистику, если выбрана доставка)
   const totalAmount = baseAmount + currentDeliveryCost;
 
   if (!item || totalAmount <= 0 || !email.includes('@')) {
@@ -65,7 +72,6 @@ async function handlePayment(e) {
     const response = await fetch('/api/pay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // Отправляем на сервер общую сумму totalAmount
       body: JSON.stringify({ item, amount: totalAmount, email, paymentType: currentPaymentType })
     });
 
