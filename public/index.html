@@ -20,7 +20,6 @@
     <main class="pay-card">
       <form id="paymentForm" onsubmit="handlePayment(event)">
         
-        <!-- БЛОК ВКЛАДОК -->
         <div class="tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
           <button type="button" class="tab-btn active" data-type="main" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer; font-size: 13px;">Основные оплаты</button>
           
@@ -29,7 +28,6 @@
           <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Доставка Ozon</button>
         </div>
 
-        <!-- ГРУППА 1: ПОЛЯ ДЛЯ ОПЛАТЫ ТОВАРОВ -->
         <div id="productFields">
           <div class="form-group">
             <label for="itemInput">Ваши позиции</label>
@@ -41,11 +39,10 @@
           </div>
         </div>
 
-        <!-- ГРУППА 2: ПОЛЯ ДЛЯ ДОСТАВКИ -->
         <div id="deliveryFields" style="display: none;">
           <div class="form-group">
-            <label for="fioInput">ФИО получателя</label>
-            <input type="text" id="fioInput" class="form-control" placeholder="Иванов Иван Иванович" />
+            <label for="tgInput">Юзернейм в Telegram</label>
+            <input type="text" id="tgInput" class="form-control" placeholder="Например: @hellopinky" onchange="calculateDelivery()" />
           </div>
           
           <div class="form-group">
@@ -59,11 +56,10 @@
           </div>
           
           <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 14px; color: #b05c8a; margin-top: 15px; padding: 12px; background: #fbe6f0; border-radius: 8px;">
-            🚚 Стоимость логистики: <span id="deliveryCostDisplay" style="font-weight: bold;">считаем...</span>
+            🚚 Стоимость логистики с упаковкой: <span id="deliveryCostDisplay" style="font-weight: bold;">считаем...</span>
           </div>
         </div>
 
-        <!-- ОБЩЕЕ ПОЛЕ -->
         <div class="form-group" style="margin-top: 15px;">
           <label for="emailInput">E-mail для чека</label>
           <input type="email" id="emailInput" class="form-control" placeholder="client@hellopinky.ru" required />
