@@ -140,7 +140,7 @@ function parseTSV(text) {
     });
 }
 
-// --- АЛГОРИТМ УПАКОВКИ ---
+// --- АЛГОРИТМ УПАКОВКИ (ОБНОВЛЕННЫЙ) ---
 async function getOptimalPackaging(username) {
     try {
         const [ordRes, prodRes, boxRes] = await Promise.all([ fetch(TSV_ORDERS), fetch(TSV_PRODUCTS), fetch(TSV_BOXES) ]);
@@ -148,11 +148,11 @@ async function getOptimalPackaging(username) {
         const products = parseTSV(await prodRes.text());
         const boxes = parseTSV(await boxRes.text());
 
-        // Очищаем юзернейм от @ и приводим к нижнему регистру для точного поиска
+        // Очищаем юзернейм
         const cleanUser = username.replace('@', '').trim().toLowerCase();
         
         const userOrders = orders.filter(o => {
-            const rowUser = o['Юзернейм'] ? o['Юзернейм'].replace('@', '').trim().toLowerCase() : '';
+            const rowUser = (o['Юзернейм'] || o['юзернейм'] || '').replace('@', '').trim().toLowerCase();
             return rowUser === cleanUser;
         });
 
@@ -160,16 +160,26 @@ async function getOptimalPackaging(username) {
 
         let totalVolume = 0, totalWeight = 0;
         let maxL = 0, maxW = 0, maxH = 0;
+        let foundProducts = 0;
 
         userOrders.forEach(o => {
-            const prod = products.find(p => p['Товар'] === o['Товар']);
+            // Ищем название товара, игнорируя регистр и пробелы
+            const orderItemName = (o['Товар'] || o['Позиция'] || '').trim().toLowerCase();
+            
+            const prod = products.find(p => {
+                const pName = (p['Товар'] || p['Позиция'] || '').trim().toLowerCase();
+                return pName === orderItemName && pName !== '';
+            });
+
             if (prod) {
-                const qty = parseInt(o['Кол-во']) || 1;
-                // Заменяем запятые на точки для корректной математики
-                const l = parseFloat((prod['Длина (см)'] || '0').replace(',', '.')) || 0;
-                const w = parseFloat((prod['Ширина (см)'] || '0').replace(',', '.')) || 0;
-                const h = parseFloat((prod['Высота (см)'] || '0').replace(',', '.')) || 0;
-                const weight = parseFloat((prod['Вес (г)'] || '0').replace(',', '.')) || 0;
+                foundProducts++;
+                const qty = parseInt(o['Кол-во'] || o['Количество'] || '1') || 1;
+                
+                // Поддерживаем колонки как с "(см)", так и без
+                const l = parseFloat((prod['Длина (см)'] || prod['Длина'] || '0').replace(',', '.')) || 0;
+                const w = parseFloat((prod['Ширина (см)'] || prod['Ширина'] || '0').replace(',', '.')) || 0;
+                const h = parseFloat((prod['Высота (см)'] || prod['Высота'] || '0').replace(',', '.')) || 0;
+                const weight = parseFloat((prod['Вес (г)'] || prod['Вес'] || '0').replace(',', '.')) || 0;
 
                 totalVolume += (l * w * h) * qty;
                 totalWeight += weight * qty;
@@ -178,25 +188,28 @@ async function getOptimalPackaging(username) {
                 if (dims[0] > maxL) maxL = dims[0];
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
+            } else {
+                addLog(`⚠️ Товар из заказа не найден в Справочнике: "${o['Товар']}"`);
             }
         });
 
-        if (totalVolume === 0) return { error: "Не удалось определить габариты товаров из Справочника." };
+        if (foundProducts === 0 || totalVolume === 0) {
+            return { error: "Не удалось определить габариты товаров из Справочника. Проверьте совпадение названий." };
+        }
 
         let selectedBox = null;
         let minBoxVol = Infinity;
 
         boxes.forEach(b => {
-            const bl = parseFloat((b['Длина (см)'] || '0').replace(',', '.'));
-            const bw = parseFloat((b['Ширина (см)'] || '0').replace(',', '.'));
-            const bh = parseFloat((b['Высота (см)'] || '0').replace(',', '.'));
-            const boxWeight = parseFloat((b['Вес пустой (г)'] || '0').replace(',', '.'));
-            const matCost = parseFloat((b['Стоимость материалов (₽)'] || '0').replace(',', '.'));
+            const bl = parseFloat((b['Длина (см)'] || b['Длина'] || '0').replace(',', '.'));
+            const bw = parseFloat((b['Ширина (см)'] || b['Ширина'] || '0').replace(',', '.'));
+            const bh = parseFloat((b['Высота (см)'] || b['Высота'] || '0').replace(',', '.'));
+            const boxWeight = parseFloat((b['Вес пустой (г)'] || b['Вес пустой'] || '0').replace(',', '.'));
+            const matCost = parseFloat((b['Стоимость материалов (₽)'] || b['Стоимость материалов'] || b['Цена коробки (₽)'] || '0').replace(',', '.'));
 
             const boxVol = bl * bw * bh;
             const bDims = [bl, bw, bh].sort((a,b) => b - a);
 
-            // Проверяем, влезает ли общий объем и помещается ли самый длинный предмет
             if (boxVol >= totalVolume && bDims[0] >= maxL && bDims[1] >= maxW && bDims[2] >= maxH) {
                 if (boxVol < minBoxVol) {
                     minBoxVol = boxVol;
@@ -205,7 +218,6 @@ async function getOptimalPackaging(username) {
             }
         });
 
-        // Если ничего не подошло (товаров слишком много), ставим дефолтную большую коробку Ozon M
         if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
         return { success: true, box: selectedBox, itemCount: userOrders.length };
 
