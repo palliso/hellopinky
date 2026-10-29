@@ -40,6 +40,17 @@
           <input type="email" id="emailInput" class="form-control" placeholder="client@hellopinky.ru" required />
         </div>
 
+        <!-- НОВЫЙ БЛОК: Доставка -->
+        <div class="form-group">
+          <label for="cityInput">Город доставки (Ozon)</label>
+          <input type="text" id="cityInput" class="form-control" placeholder="Например: Москва" onchange="calculateDelivery()" />
+        </div>
+        
+        <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 13px; color: #b05c8a; margin-bottom: 15px; padding: 10px; background: #fbe6f0; border-radius: 12px;">
+          🚚 Стоимость доставки: <span id="deliveryCostDisplay">считаем...</span>
+        </div>
+        <!-- КОНЕЦ БЛОКА -->
+
         <div class="total-box">
           <span class="total-box-label">Итого:</span>
           <span class="total-box-amount" id="totalAmountDisplay">0 ₽</span>
