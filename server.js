@@ -128,14 +128,20 @@ setInterval(async () => {
     }
 }, 10000);
 
-// --- ФУНКЦИЯ ПАРСИНГА TSV ТАБЛИЦ ---
+// --- ФУНКЦИЯ ПАРСИНГА TSV ТАБЛИЦ (БРОНЕБОЙНАЯ) ---
 function parseTSV(text) {
     const lines = text.trim().split('\n');
-    const headers = lines[0].split('\t').map(h => h.trim());
+    if (lines.length < 2) return [];
+    
+    // Очищаем заголовки от невидимых символов (BOM) и переводим в нижний регистр
+    const headers = lines[0].replace(/^\uFEFF/, '').split('\t').map(h => h.trim().toLowerCase());
+    
     return lines.slice(1).map(line => {
         const values = line.split('\t');
         let obj = {};
-        headers.forEach((h, i) => obj[h] = values[i] ? values[i].trim() : "");
+        headers.forEach((h, i) => {
+            if (h) obj[h] = values[i] ? values[i].trim() : "";
+        });
         return obj;
     });
 }
@@ -148,11 +154,10 @@ async function getOptimalPackaging(username) {
         const products = parseTSV(await prodRes.text());
         const boxes = parseTSV(await boxRes.text());
 
-        // Очищаем юзернейм
         const cleanUser = username.replace('@', '').trim().toLowerCase();
         
         const userOrders = orders.filter(o => {
-            const rowUser = (o['Юзернейм'] || o['юзернейм'] || '').replace('@', '').trim().toLowerCase();
+            const rowUser = (o['юзернейм'] || '').replace('@', '').trim().toLowerCase();
             return rowUser === cleanUser;
         });
 
@@ -163,23 +168,21 @@ async function getOptimalPackaging(username) {
         let foundProducts = 0;
 
         userOrders.forEach(o => {
-            // Ищем название товара, игнорируя регистр и пробелы
-            const orderItemName = (o['Товар'] || o['Позиция'] || '').trim().toLowerCase();
+            const orderItemName = (o['товар'] || o['позиция'] || '').trim().toLowerCase();
             
             const prod = products.find(p => {
-                const pName = (p['Товар'] || p['Позиция'] || '').trim().toLowerCase();
+                const pName = (p['товар'] || p['позиция'] || '').trim().toLowerCase();
                 return pName === orderItemName && pName !== '';
             });
 
             if (prod) {
                 foundProducts++;
-                const qty = parseInt(o['Кол-во'] || o['Количество'] || '1') || 1;
+                const qty = parseInt(o['кол-во'] || o['количество'] || '1') || 1;
                 
-                // Поддерживаем колонки как с "(см)", так и без
-                const l = parseFloat((prod['Длина (см)'] || prod['Длина'] || '0').replace(',', '.')) || 0;
-                const w = parseFloat((prod['Ширина (см)'] || prod['Ширина'] || '0').replace(',', '.')) || 0;
-                const h = parseFloat((prod['Высота (см)'] || prod['Высота'] || '0').replace(',', '.')) || 0;
-                const weight = parseFloat((prod['Вес (г)'] || prod['Вес'] || '0').replace(',', '.')) || 0;
+                const l = parseFloat((prod['длина (см)'] || prod['длина'] || '0').replace(',', '.')) || 0;
+                const w = parseFloat((prod['ширина (см)'] || prod['ширина'] || '0').replace(',', '.')) || 0;
+                const h = parseFloat((prod['высота (см)'] || prod['высота'] || '0').replace(',', '.')) || 0;
+                const weight = parseFloat((prod['вес (г)'] || prod['вес'] || '0').replace(',', '.')) || 0;
 
                 totalVolume += (l * w * h) * qty;
                 totalWeight += weight * qty;
@@ -189,23 +192,23 @@ async function getOptimalPackaging(username) {
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
             } else {
-                addLog(`⚠️ Товар из заказа не найден в Справочнике: "${o['Товар']}"`);
+                addLog(`⚠️ Товар не найден в Справочнике: "${o['товар']}"`);
             }
         });
 
         if (foundProducts === 0 || totalVolume === 0) {
-            return { error: "Не удалось определить габариты товаров из Справочника. Проверьте совпадение названий." };
+            return { error: "Не удалось определить габариты. Проверьте совпадение названий товаров." };
         }
 
         let selectedBox = null;
         let minBoxVol = Infinity;
 
         boxes.forEach(b => {
-            const bl = parseFloat((b['Длина (см)'] || b['Длина'] || '0').replace(',', '.'));
-            const bw = parseFloat((b['Ширина (см)'] || b['Ширина'] || '0').replace(',', '.'));
-            const bh = parseFloat((b['Высота (см)'] || b['Высота'] || '0').replace(',', '.'));
-            const boxWeight = parseFloat((b['Вес пустой (г)'] || b['Вес пустой'] || '0').replace(',', '.'));
-            const matCost = parseFloat((b['Стоимость материалов (₽)'] || b['Стоимость материалов'] || b['Цена коробки (₽)'] || '0').replace(',', '.'));
+            const bl = parseFloat((b['длина (см)'] || b['длина'] || '0').replace(',', '.'));
+            const bw = parseFloat((b['ширина (см)'] || b['ширина'] || '0').replace(',', '.'));
+            const bh = parseFloat((b['высота (см)'] || b['высота'] || '0').replace(',', '.'));
+            const boxWeight = parseFloat((b['вес пустой (г)'] || b['вес пустой'] || '0').replace(',', '.'));
+            const matCost = parseFloat((b['стоимость материалов (₽)'] || b['стоимость материалов'] || b['цена коробки (₽)'] || '0').replace(',', '.'));
 
             const boxVol = bl * bw * bh;
             const bDims = [bl, bw, bh].sort((a,b) => b - a);
@@ -217,6 +220,15 @@ async function getOptimalPackaging(username) {
                 }
             }
         });
+
+        if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
+        return { success: true, box: selectedBox, itemCount: userOrders.length };
+
+    } catch (e) {
+        addLog(`❌ Ошибка чтения таблиц: ${e.message}`);
+        return { error: "Не удалось прочитать данные таблицы заказов." };
+    }
+}
 
         if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
         return { success: true, box: selectedBox, itemCount: userOrders.length };
