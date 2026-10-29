@@ -75,34 +75,6 @@ async function getOzonToken() {
     return null;
 }
 
-// --- ЛОГИКА МОДУЛЬБАНКА (ОПЛАТЫ) ---
-async function loadRetailPoints() {
-    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
-    try {
-        if (!state.companyId) {
-            const accRes = await fetch("https://api.modulbank.ru/v1/account-info", { method: "POST", headers });
-            if (accRes.ok) {
-                const data = await accRes.json();
-                state.companyId = data[0]?.companyId || data[0]?.id;
-            }
-        }
-        if (state.companyId) {
-            const rpRes = await fetch(`https://api.modulbank.ru/v1/sbp/retail-points?companyId=${state.companyId}`, { method: "GET", headers });
-            if (rpRes.ok) {
-                const points = await rpRes.json();
-                console.log("📌 ДОСТУПНЫЕ ТОРГОВЫЕ ТОЧКИ СБП:", JSON.stringify(points, null, 2));
-                
-                if (points && points.length > 0) {
-                    state.retailPointsMap.main = points[0]?.id || null;
-                    state.retailPointsMap.preorder = points[1]?.id || points[0]?.id || null;
-                }
-            }
-        }
-    } catch (e) {
-        addLog(`❌ Ошибка получения точек: ${e.message}`);
-    }
-}
-
 async function createDynamicQr(amount, description, paymentType) {
     if (!state.retailPointsMap.main || !state.retailPointsMap.preorder) {
         await loadRetailPoints();
