@@ -202,9 +202,33 @@ app.get('/api/pvz-suggest', (req, res) => {
 });
 
 // 6. Расчет доставки
+// 6. Расчет доставки (умный поиск ПВЗ)
 app.post('/api/delivery-calc', async (req, res) => {
-    const { pvzId, tgUser, phone } = req.body;
-    if (!pvzId || !tgUser) return res.status(400).json({ success: false, error: "Укажите ID ПВЗ и Юзернейм." });
+    let { pvzId, targetAddress, tgUser, phone } = req.body;
+    if (!tgUser || (!pvzId && !targetAddress)) {
+        return res.status(400).json({ success: false, error: "Укажите адрес ПВЗ и Юзернейм." });
+    }
+
+    // Если клиент не выбрал из списка, а просто нажал кнопку с текстом — ищем ПВЗ сами
+    let finalAddressString = "Неизвестный ПВЗ";
+    if (!pvzId && targetAddress) {
+        if (cachedOzonPoints.length === 0) {
+            return res.status(500).json({ success: false, error: "База ПВЗ еще загружается, подождите 1 минуту." });
+        }
+        const searchTerms = targetAddress.toLowerCase().match(/[a-zа-яё0-9]+/g) || [];
+        const foundPvz = cachedOzonPoints.find(p => {
+            const addrNorm = p.address.toLowerCase();
+            return searchTerms.every(term => addrNorm.includes(term));
+        });
+        
+        if (!foundPvz) return res.status(400).json({ success: false, error: "ПВЗ не найден. Уточните адрес." });
+        pvzId = foundPvz.id;
+        finalAddressString = foundPvz.address;
+    } else if (pvzId) {
+        // Если выбрали из списка, просто красивое название для чека
+        const foundPvz = cachedOzonPoints.find(p => p.id == pvzId);
+        if (foundPvz) finalAddressString = foundPvz.address;
+    }
 
     const packData = await getOptimalPackaging(tgUser);
     if (packData.error) return res.status(400).json({ success: false, error: packData.error });
@@ -239,7 +263,7 @@ app.post('/api/delivery-calc', async (req, res) => {
             const data = await ozonRes.json();
             const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
             const finalPrice = Math.ceil((ozonTariff + packData.box.materialCost + 20) / 0.92);
-            res.json({ success: true, deliveryPrice: finalPrice });
+            res.json({ success: true, deliveryPrice: finalPrice, foundAddress: finalAddressString });
         } else {
             res.status(500).json({ success: false, error: `ПВЗ недоступен для расчета.` });
         }
