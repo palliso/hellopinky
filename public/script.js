@@ -164,3 +164,56 @@ function showToast(msg) {
   clearTimeout(window._toastTimer);
   window._toastTimer = setTimeout(() => box.style.display = 'none', 3500);
 }
+
+let suggestTimer;
+let selectedPvzId = null;
+
+async function suggestPvz() {
+    const input = document.getElementById('pvzAddressInput').value.trim();
+    const list = document.getElementById('autocompleteList');
+    selectedPvzId = null; // Сбрасываем выбранный ID при изменении текста
+    
+    if (input.length < 3) {
+        list.style.display = 'none';
+        return;
+    }
+
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(async () => {
+        try {
+            const res = await fetch(`/api/pvz-suggest?q=${encodeURIComponent(input)}`);
+            const data = await res.json();
+            
+            list.innerHTML = '';
+            if (data.points && data.points.length > 0) {
+                data.points.forEach(p => {
+                    const li = document.createElement('li');
+                    li.style.cssText = 'padding: 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 12px; color: #333; line-height: 1.4;';
+                    li.innerHTML = p.address.replace(new RegExp(input, 'gi'), match => `<b style="color:#ff4d85;">${match}</b>`);
+                    
+                    // По клику на подсказку
+                    li.onclick = () => {
+                        document.getElementById('pvzAddressInput').value = p.address;
+                        selectedPvzId = p.id;
+                        list.style.display = 'none';
+                        calculateDelivery(); // Сразу запускаем расчет!
+                    };
+                    
+                    list.appendChild(li);
+                });
+                list.style.display = 'block';
+            } else {
+                list.style.display = 'none';
+            }
+        } catch (e) {
+            list.style.display = 'none';
+        }
+    }, 400); // Ждем 400мс, чтобы не спамить запросами пока человек печатает
+}
+
+// Прятать список при клике в другое место
+document.addEventListener('click', function(e) {
+    if (e.target.id !== 'pvzAddressInput') {
+        document.getElementById('autocompleteList').style.display = 'none';
+    }
+});
