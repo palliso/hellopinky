@@ -22,11 +22,8 @@
         
         <div class="tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
           <button type="button" class="tab-btn active" data-type="main" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer; font-size: 13px;">Основные оплаты</button>
-          
-          <!-- ВОТ ОНА, ВКЛАДКА ПРЕДЗАКАЗОВ -->
           <button type="button" class="tab-btn" data-type="preorder" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Предзаказы</button>
-          
-          <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Доставка Ozon</button>
+          <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Калькулятор доставки</button>
         </div>
 
         <div id="productFields">
@@ -43,22 +40,15 @@
         <div id="deliveryFields" style="display: none;">
           <div class="form-group">
             <label for="tgInput">Юзернейм в Telegram</label>
-            <input type="text" id="tgInput" class="form-control" placeholder="Например: @hellopinky" onchange="calculateDelivery()" />
-          </div>
-          
-          <!-- ВОТ ОНО, ПОЛЕ ТЕЛЕФОНА -->
-          <div class="form-group" style="padding-top: 10px;">
-            <label for="phoneInput">Телефон получателя</label>
-            <input type="tel" id="phoneInput" class="form-control" placeholder="+7 999 000-00-00" onchange="calculateDelivery()" />
-          </div>
-
-          <div class="form-group" style="padding-top: 10px;">
-            <label for="pvzAddressInput">Адрес ПВЗ Ozon</label>
-            <input type="text" id="pvzAddressInput" class="form-control" placeholder="Город и улица, например: Екатеринбург Ленина 10" onchange="calculateDelivery()" />
+            <div style="display: flex; gap: 10px;">
+              <input type="text" id="tgInput" class="form-control" placeholder="@hellopinky" />
+              <button type="button" onclick="calculateDelivery()" style="padding: 0 15px; background: #ff4d85; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">СЧИТАТЬ</button>
+            </div>
           </div>
           
           <div class="delivery-info" id="deliveryInfoBox" style="display: none; font-size: 14px; color: #b05c8a; margin-top: 15px; padding: 12px; background: #fbe6f0; border-radius: 8px;">
-            🚚 Стоимость логистики с упаковкой: <span id="deliveryCostDisplay" style="font-weight: bold;">считаем...</span>
+            🚚 Итого к оплате с учетом налогов: <span id="deliveryCostDisplay" style="font-weight: bold; font-size: 16px;"></span>
+            <div id="boxInfoDisplay" style="font-size: 12px; color: #666; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0cce0;"></div>
           </div>
         </div>
 
