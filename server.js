@@ -12,13 +12,13 @@ const CACHE_FILE = path.join(__dirname, 'pvz_cache.json');
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
-// 1. Моментально читаем кэш при старте, если он есть
+// Мгновенная загрузка кэша при старте
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        console.log(`✅ База ПВЗ загружена из файла. Размер: ${cachedOzonPoints.length} пунктов.`);
+        console.log(`✅ Кэш ПВЗ загружен. Точек в базе: ${cachedOzonPoints.length}`);
     } catch (e) {
-        console.log(`⚠️ Ошибка чтения кэша.`);
+        console.log(`⚠️ Ошибка чтения кэша, будет сформирован новый.`);
     }
 }
 
@@ -70,23 +70,18 @@ async function getOzonToken() {
     }
 }
 
-// 2. Официальная загрузка по курсору (согласно документации Ozon Delivery API)[cite: 53]
+// Фоновая загрузка по официальному курсору Ozon[cite: 53]
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     
-    // Защита от параллельных контейнеров на хостинге: если база уже собрана, пропускаем
-    if (fs.existsSync(CACHE_FILE)) {
-        try {
-            const existingData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-            if (existingData.length > 1000) {
-                cachedOzonPoints = existingData;
-                return;
-            }
-        } catch (e) {}
+    // Если база уже собрана (больше 1000 точек), не дергаем API лишний раз
+    if (cachedOzonPoints.length > 1000) {
+        console.log(`✨ База актуальна (${cachedOzonPoints.length} точек). Пропускаем скачивание.`);
+        return;
     }
 
     isBaseLoading = true;
-    console.log(`⏳ Запуск скачивания базы ПВЗ по официальному курсору Ozon...`);
+    console.log(`⏳ Старт фоновой выгрузки ПВЗ через Ozon Delivery API...`);
     
     try {
         const token = await getOzonToken();
@@ -102,72 +97,77 @@ async function loadPvzDatabase() {
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
-        while (hasMore) {
-            const bodyPayload = {
-                pagination: {
-                    limit: limit,
-                    ...(cursor ? { cursor: cursor } : {})
-                }
-            };
+        let failCount = 0;
 
-            const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
-                method: "POST", headers, body: JSON.stringify(bodyPayload)
-            });
-            
-            if (!listRes.ok) {
-                console.log(`⚠️ Озон ответил статусом ${listRes.status}. Пауза 5 сек...`);
-                await new Promise(r => setTimeout(r, 5000));
-                continue;
-            }
+        while (hasMore && failCount < 5) {
+            try {
+                const bodyPayload = {
+                    pagination: {
+                        limit: limit,
+                        ...(cursor ? { cursor: cursor } : {})
+                    }
+                };
 
-            const listData = await listRes.json();
-            
-            if (!listData.delivery_points || listData.delivery_points.length === 0) {
-                break;
-            }
-            
-            let addedCount = 0;
-            for (const p of listData.delivery_points) {
-                const pointId = p.delivery_point_id || p.id;
-                const pointAddr = p.full_address || p.address;
+                const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
+                    method: "POST", headers, body: JSON.stringify(bodyPayload)
+                });
                 
-                if (pointId && !allIds.has(pointId)) {
-                    allIds.add(pointId);
-                    allPoints.push({
-                        id: pointId,
-                        address: pointAddr || "Адрес уточняется"
-                    });
-                    addedCount++;
+                if (!listRes.ok) {
+                    failCount++;
+                    await new Promise(r => setTimeout(r, 3000));
+                    continue;
                 }
-            }
 
-            fs.writeFileSync(CACHE_FILE, JSON.stringify(allPoints));
-            if (addedCount > 0) {
-                console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе: ${allPoints.length}`);
-            }
+                const listData = await listRes.json();
+                
+                if (!listData.delivery_points || listData.delivery_points.length === 0) {
+                    break;
+                }
+                
+                let addedCount = 0;
+                for (const p of listData.delivery_points) {
+                    const pointId = p.delivery_point_id || p.id;
+                    const pointAddr = p.full_address || p.address;
+                    
+                    if (pointId && !allIds.has(pointId)) {
+                        allIds.add(pointId);
+                        allPoints.push({
+                            id: pointId,
+                            address: pointAddr || "Адрес уточняется"
+                        });
+                        addedCount++;
+                    }
+                }
 
-            if (listData.next_cursor) {
-                cursor = listData.next_cursor;
-            } else {
-                hasMore = false;
-            }
+                fs.writeFileSync(CACHE_FILE, JSON.stringify(allPoints));
+                if (addedCount > 0) {
+                    console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе: ${allPoints.length}`);
+                }
 
-            await new Promise(r => setTimeout(r, 3000));
+                if (listData.next_cursor) {
+                    cursor = listData.next_cursor;
+                    failCount = 0;
+                } else {
+                    hasMore = false;
+                }
+
+                await new Promise(r => setTimeout(r, 1500)); // Безопасная пауза
+            } catch (err) {
+                failCount++;
+                await new Promise(r => setTimeout(r, 4000));
+            }
         }
 
         cachedOzonPoints = allPoints;
-        console.log(`✅ ИТОГ: Загрузка завершена. Всего адресов в базе: ${cachedOzonPoints.length}`);
+        console.log(`✅ ИТОГ: База ПВЗ готова. Всего точек: ${cachedOzonPoints.length}`);
     } catch (e) {
-        console.log(`❌ Ошибка загрузки: ${e.message}`);
+        console.log(`❌ Ошибка загрузки базы: ${e.message}`);
     } finally {
         isBaseLoading = false;
     }
 }
 
-setTimeout(() => {
-    loadPvzDatabase();
-}, 5000);
-
+setTimeout(() => { loadPvzDatabase(); }, 4000);
 setInterval(loadPvzDatabase, 7 * 24 * 60 * 60 * 1000);
 
 function parseTSV(text) {
@@ -222,9 +222,9 @@ async function getOptimalPackaging(username) {
             const boxWeight = parseFloat((b['вес пустой (г)'] || '0').replace(',', '.'));
             const matCost = parseFloat((b['стоимость материалов (₽)'] || '0').replace(',', '.'));
             const boxVol = bl * bw * bh;
-            const bDims = [bl, bw, bh].sort((a,b) => b - a);
+            const bDims = [bl, bw, bh].sort((a,b) => a - b);
 
-            if (boxVol >= totalVolume && bDims[0] >= maxL && bDims[1] >= maxW && bDims[2] >= maxH) {
+            if (boxVol >= totalVolume && bDims[0] <= bl && bDims[1] <= bw && bDims[2] <= bh) {
                 if (boxVol < minBoxVol) { 
                     minBoxVol = boxVol; 
                     selectedBox = { length: bl, width: bw, height: bh, weight: totalWeight + boxWeight, materialCost: matCost }; 
