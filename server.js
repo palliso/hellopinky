@@ -12,11 +12,14 @@ const CACHE_FILE = path.join(__dirname, 'pvz_cache.json');
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
+// 1. Моментально читаем кэш при старте, если он есть
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        console.log(`✅ База ПВЗ загружена из файла. Текущий размер счетчика: ${cachedOzonPoints.length} пунктов.`);
-    } catch (e) {}
+        console.log(`✅ База ПВЗ загружена из файла. Размер: ${cachedOzonPoints.length} пунктов.`);
+    } catch (e) {
+        console.log(`⚠️ Ошибка чтения кэша.`);
+    }
 }
 
 const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
@@ -67,10 +70,23 @@ async function getOzonToken() {
     }
 }
 
+// 2. Официальная загрузка по курсору (согласно документации Ozon Delivery API)[cite: 53]
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
+    
+    // Защита от параллельных контейнеров на хостинге: если база уже собрана, пропускаем
+    if (fs.existsSync(CACHE_FILE)) {
+        try {
+            const existingData = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+            if (existingData.length > 1000) {
+                cachedOzonPoints = existingData;
+                return;
+            }
+        } catch (e) {}
+    }
+
     isBaseLoading = true;
-    console.log(`⏳ Запуск фонового скачивания по спецификации Ozon API...`);
+    console.log(`⏳ Запуск скачивания базы ПВЗ по официальному курсору Ozon...`);
     
     try {
         const token = await getOzonToken();
@@ -82,7 +98,7 @@ async function loadPvzDatabase() {
         let allPoints = [...cachedOzonPoints];
         let allIds = new Set(allPoints.map(p => p.id));
         let cursor = null;
-        const limit = 100; // Безопасный лимит по документации
+        const limit = 100;
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -112,7 +128,6 @@ async function loadPvzDatabase() {
             
             let addedCount = 0;
             for (const p of listData.delivery_points) {
-                // Извлекаем id и адрес прямо из структуры ответа метода list
                 const pointId = p.delivery_point_id || p.id;
                 const pointAddr = p.full_address || p.address;
                 
@@ -127,23 +142,23 @@ async function loadPvzDatabase() {
             }
 
             fs.writeFileSync(CACHE_FILE, JSON.stringify(allPoints));
-            console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе: ${allPoints.length}`);
+            if (addedCount > 0) {
+                console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе: ${allPoints.length}`);
+            }
 
-            // Проверяем наличие следующей страницы по курсору из ответа Ozon
             if (listData.next_cursor) {
                 cursor = listData.next_cursor;
             } else {
                 hasMore = false;
             }
 
-            // Вежливая пауза между страницами для обхода WAF
             await new Promise(r => setTimeout(r, 3000));
         }
 
         cachedOzonPoints = allPoints;
         console.log(`✅ ИТОГ: Загрузка завершена. Всего адресов в базе: ${cachedOzonPoints.length}`);
     } catch (e) {
-        console.log(`❌ Критическая ошибка: ${e.message}`);
+        console.log(`❌ Ошибка загрузки: ${e.message}`);
     } finally {
         isBaseLoading = false;
     }
