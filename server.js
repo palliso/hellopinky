@@ -82,55 +82,61 @@ async function getOzonToken() {
     return data.access_token;
 }
 
-// 2. Умная загрузка через современный last_id
+// 2. Умная загрузка (двойная передача пагинации)
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     isBaseLoading = true;
-    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (перелистывание по last_id)...");
+    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (исправленная пагинация)...");
     
     try {
         const token = await getOzonToken();
         if (!token) throw new Error("Не удалось получить токен");
 
         let allIds = new Set();
-        let lastId = undefined; // Теперь используем last_id вместо offset
-        const limit = 250;
+        let offset = 0;
+        const limit = 1000; // Вернули максимальный лимит для скорости
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         while (true) {
+            // ИСПРАВЛЕНИЕ: дублируем limit и offset и в корень, и в pagination, + добавляем пустой filter
             const listData = await safeFetchJson("https://api-delivery.ozon.ru/v1/delivery-point/list", {
-                method: "POST", headers, body: JSON.stringify({ pagination: { limit, last_id: lastId } }) // Отправляем last_id
+                method: "POST", 
+                headers, 
+                body: JSON.stringify({ 
+                    filter: {},
+                    limit: limit, 
+                    offset: offset,
+                    pagination: { limit: limit, offset: offset } 
+                })
             });
 
             if (listData.error || !listData.delivery_points || listData.delivery_points.length === 0) break;
             
             let newIdsCount = 0;
-            let currentLastId = undefined;
-
             for (const p of listData.delivery_points) {
                 if (!allIds.has(p.delivery_point_id)) {
                     allIds.add(p.delivery_point_id);
                     newIdsCount++;
                 }
-                currentLastId = p.delivery_point_id; // Запоминаем ID последнего пункта
             }
 
-            if (newIdsCount === 0 || currentLastId === lastId) {
-                console.log("🛑 Ozon больше не дает новых адресов. Сбор ID завершен!");
+            if (newIdsCount === 0) {
+                console.log("🛑 Ozon перестал выдавать новые адреса. Сбор ID завершен!");
                 break;
             }
 
-            lastId = currentLastId; // Передаем последний ID для следующего запроса
+            offset += limit;
             console.log(`Собрано уникальных ID: ${allIds.size}...`);
-            await new Promise(r => setTimeout(r, 2000)); 
+            await new Promise(r => setTimeout(r, 1500)); // Пауза для стабильности
         }
 
         const uniqueIdsArray = Array.from(allIds);
         console.log(`✅ УСПЕХ: Получено ${uniqueIdsArray.length} уникальных ID. Переходим к адресам...`);
         
         let points = [];
-        for (let i = 0; i < uniqueIdsArray.length; i += 100) {
-            const chunk = uniqueIdsArray.slice(i, i + 100);
+        // Скачиваем адреса ускоренно — порциями по 250
+        for (let i = 0; i < uniqueIdsArray.length; i += 250) {
+            const chunk = uniqueIdsArray.slice(i, i + 250);
             const infoData = await safeFetchJson("https://api-delivery.ozon.ru/v1/delivery-point/info", {
                 method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunk })
             });
@@ -141,7 +147,8 @@ async function loadPvzDatabase() {
                     address: p.full_address
                 })));
             }
-            await new Promise(r => setTimeout(r, 3500)); 
+            console.log(`Скачано адресов: ${points.length} из ${uniqueIdsArray.length}`);
+            await new Promise(r => setTimeout(r, 2000)); 
         }
         
         if (points.length > 0) {
