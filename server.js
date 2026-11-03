@@ -12,13 +12,12 @@ const CACHE_FILE = path.join(__dirname, 'pvz_cache.json');
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
+// Читаем то, что уже успело скачаться ранее
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        console.log(`✅ УСПЕХ: База ПВЗ загружена из файла (${cachedOzonPoints.length} пунктов).`);
-    } catch (e) {
-        console.log(`⚠️ Ошибка чтения кэша.`);
-    }
+        console.log(`✅ База ПВЗ загружена из файла (${cachedOzonPoints.length} пунктов).`);
+    } catch (e) {}
 }
 
 const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
@@ -34,7 +33,7 @@ let ozonDdosCookie = "";
 async function fetchOzon(url, options = {}) {
     options.redirect = 'manual'; 
     if (!options.headers) options.headers = {};
-    options.headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+    options.headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     if (ozonDdosCookie) options.headers['Cookie'] = ozonDdosCookie;
 
     let res = await fetch(url, options);
@@ -52,92 +51,128 @@ async function fetchOzon(url, options = {}) {
 }
 
 async function getOzonToken() {
-    const res = await fetch("https://xapi.ozon.ru/oauth/token", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            client_id: OZON_CLIENT_ID,
-            client_secret: OZON_CLIENT_SECRET,
-            grant_type: "client_credentials",
-            scope: ["delivery-api.delivery", "delivery-api.delivery-point", "delivery-api.order", "delivery-api.posting"]
-        })
-    });
-    const data = await res.json();
-    return data.access_token;
+    try {
+        const res = await fetch("https://xapi.ozon.ru/oauth/token", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                client_id: OZON_CLIENT_ID,
+                client_secret: OZON_CLIENT_SECRET,
+                grant_type: "client_credentials",
+                scope: ["delivery-api.delivery", "delivery-api.delivery-point", "delivery-api.order", "delivery-api.posting"]
+            })
+        });
+        const data = await res.json();
+        return data.access_token;
+    } catch (e) {
+        return null;
+    }
 }
 
-// Загрузка базы на сервере мелкими порциями по 250 с защитой
+// Сверх-устойчивая загрузка с защитой от банов WAF
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     isBaseLoading = true;
-    console.log("⏳ Сервер начинает сбор базы ПВЗ порциями по 250...");
+    console.log("⏳ Запуск безопасного скачивания базы с серверными паузами...");
     
     try {
         const token = await getOzonToken();
-        if (!token) return;
+        if (!token) {
+            console.log("❌ Не удалось получить токен Ozon, пробуем позже...");
+            isBaseLoading = false;
+            return;
+        }
 
-        let allIds = new Set();
-        let offset = 0;
-        const limit = 250;
+        let allIds = new Set(cachedOzonPoints.map(p => p.id)); // Сохраняем то, что уже было
+        let offset = cachedOzonPoints.length > 0 ? cachedOzonPoints.length : 0;
+        const limit = 100; // Снижаем порцию до 100, чтобы Озон не рубил соединение
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
-        while (true) {
-            const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
-                method: "POST", headers, body: JSON.stringify({ pagination: { limit, offset } })
-            });
-            const listData = await listRes.json();
+        let failsCount = 0;
 
-            if (!listData.delivery_points || listData.delivery_points.length === 0) break;
-            
-            let added = 0;
-            for (const p of listData.delivery_points) {
-                if (!allIds.has(p.delivery_point_id)) {
-                    allIds.add(p.delivery_point_id);
-                    added++;
+        while (failsCount < 5) {
+            try {
+                const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
+                    method: "POST", headers, body: JSON.stringify({ pagination: { limit, offset } })
+                });
+                
+                if (!listRes.ok) {
+                    failsCount++;
+                    console.log(`⚠️ Озон отдал статус ${listRes.status}. Ждем 10 секунд (попытка ${failsCount}/5)...`);
+                    await new Promise(r => setTimeout(r, 10000));
+                    continue;
                 }
+
+                const listData = await listRes.json();
+                if (!listData.delivery_points || listData.delivery_points.length === 0) {
+                    console.log("🏁 Загрузка ID завершена (пустой ответ от Ozon).");
+                    break;
+                }
+                
+                let added = 0;
+                let chunkIds = [];
+                for (const p of listData.delivery_points) {
+                    if (!allIds.has(p.delivery_point_id)) {
+                        chunkIds.push(p.delivery_point_id);
+                        added++;
+                    }
+                }
+
+                if (added === 0) {
+                    offset += limit;
+                    continue;
+                }
+
+                // Сразу запрашиваем детали для этой пачки, чтобы не копить мусор
+                const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
+                    method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunkIds })
+                });
+                
+                if (infoRes.ok) {
+                    const infoData = await infoRes.json();
+                    if (infoData.delivery_points) {
+                        const validPoints = infoData.delivery_points.filter(p => p.is_active).map(p => ({
+                            id: p.delivery_point_id,
+                            address: p.full_address
+                        }));
+                        
+                        for (const vp of validPoints) {
+                            if (!cachedOzonPoints.some(existing => existing.id === vp.id)) {
+                                cachedOzonPoints.push(vp);
+                                allIds.add(vp.id);
+                            }
+                        }
+                        // Сохраняем прогресс на диск после КАЖДОЙ пачки!
+                        fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
+                        console.log(`💾 Сохранено пунктов в базу: ${cachedOzonPoints.length}`);
+                    }
+                }
+
+                offset += limit;
+                failsCount = 0; // Сбрасываем счетчик ошибок при успехе
+                
+                // Главное оружие против блокировки — пауза в 3 секунды между запросами
+                await new Promise(r => setTimeout(r, 3000));
+
+            } catch (err) {
+                failsCount++;
+                console.log(`⚠️ Ошибка сети: ${err.message}. Ждем 10 секунд...`);
+                await new Promise(r => setTimeout(r, 10000));
             }
-            if (added === 0) break;
-
-            offset += limit;
-            console.log(`Собрано ID: ${allIds.size}`);
-            await new Promise(r => setTimeout(r, 1000));
         }
 
-        const idsArray = Array.from(allIds);
-        console.log(`✅ Собрано ${idsArray.length} ID. Скачиваем адреса порциями по 250...`);
-        let points = [];
-
-        for (let i = 0; i < idsArray.length; i += 250) {
-            const chunk = idsArray.slice(i, i + 250);
-            const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
-                method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunk })
-            });
-            const infoData = await infoRes.json();
-
-            if (infoData.delivery_points) {
-                points.push(...infoData.delivery_points.filter(p => p.is_active).map(p => ({
-                    id: p.delivery_point_id,
-                    address: p.full_address
-                })));
-            }
-            console.log(`Скачано адресов: ${points.length} из ${idsArray.length}`);
-            await new Promise(r => setTimeout(r, 1500));
-        }
-
-        if (points.length > 0) {
-            cachedOzonPoints = points;
-            fs.writeFileSync(CACHE_FILE, JSON.stringify(points));
-            console.log(`✅ УСПЕХ: База (${cachedOzonPoints.length} ПВЗ) скачана сервером и сохранена!`);
-        }
+        console.log(`✅ ИТОГ: База содержит ${cachedOzonPoints.length} пунктов.`);
     } catch (e) {
-        console.log(`❌ Ошибка загрузки: ${e.message}`);
+        console.log(`❌ Критическая ошибка: ${e.message}`);
     } finally {
         isBaseLoading = false;
     }
 }
 
-if (!fs.existsSync(CACHE_FILE)) {
+// Запускаем через 5 секунд после старта сервера
+setTimeout(() => {
     loadPvzDatabase();
-}
+}, 5000);
+
 setInterval(loadPvzDatabase, 7 * 24 * 60 * 60 * 1000);
 
 function parseTSV(text) {
@@ -266,13 +301,14 @@ app.post('/api/delivery-calc', async (req, res) => {
     };
 
     try {
-        const ozonRes = await fetchOzon(url, {
+        const ozonRes = `https://api-delivery.ozon.ru/v1/order/checkout`;
+        const resCheck = await fetchOzon(ozonRes, {
             method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
 
-        if (ozonRes.ok) {
-            const data = await ozonRes.json();
+        if (resCheck.ok) {
+            const data = await resCheck.json();
             const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
             const finalPrice = Math.ceil((ozonTariff + packData.box.materialCost + 20) / 0.92);
             res.json({ success: true, deliveryPrice: finalPrice, foundAddress: finalAddressString });
