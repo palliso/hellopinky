@@ -51,7 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function calculateDelivery() {
-    const address = document.getElementById('pvzAddressInput').value.trim();
+    const address = selectedPvzId;
     const tg = document.getElementById('tgInput').value.trim();
     const phone = document.getElementById('phoneInput').value.trim();
     const costBox = document.getElementById('deliveryInfoBox');
