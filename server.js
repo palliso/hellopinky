@@ -2,15 +2,28 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const express = require('express');
 const fetch = require('node-fetch');
 const path = require('path');
+const fs = require('fs'); // Добавили модуль для работы с файлами
 
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+const CACHE_FILE = path.join(__dirname, 'pvz_cache.json');
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
-// Твои ключи и таблицы
+// 1. Пытаемся сразу загрузить базу из сохраненного файла при старте
+if (fs.existsSync(CACHE_FILE)) {
+    try {
+        cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+        console.log(`✅ УСПЕХ: База ПВЗ моментально загружена из файла (${cachedOzonPoints.length} пунктов). Калькулятор готов!`);
+    } catch (e) {
+        console.log(`⚠️ Ошибка чтения файла кэша. База будет скачана заново.`);
+    }
+} else {
+    console.log(`ℹ️ Файл кэша пока отсутствует. Ожидайте первую фоновую загрузку.`);
+}
+
 const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
 const TSV_PRODUCTS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=538172532&single=true&output=tsv";
 const TSV_BOXES = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=1518762544&single=true&output=tsv";
@@ -21,12 +34,10 @@ const OZON_SHIPMENT_METHOD_ID = 1020005031049340;
 
 let ozonDdosCookie = "";
 
-// 1. Обход защиты Ozon
 async function fetchOzon(url, options = {}) {
     options.redirect = 'manual'; 
     if (!options.headers) options.headers = {};
     
-    // Притворяемся обычным браузером
     options.headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
     if (ozonDdosCookie) options.headers['Cookie'] = ozonDdosCookie;
 
@@ -44,18 +55,17 @@ async function fetchOzon(url, options = {}) {
     return res;
 }
 
-// 2. Бронебойная функция для запросов с авто-повторами при сбросе соединения (socket hang up)
-async function safeFetchJson(url, options, retries = 3) {
+async function safeFetchJson(url, options, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
             const res = await fetchOzon(url, options);
             return await res.json();
         } catch (e) {
-            console.log(`⚠️ Сбой соединения (попытка ${i + 1}/${retries}). Ждем 3 сек...`);
-            await new Promise(r => setTimeout(r, 3000));
+            console.log(`⚠️ Сбой соединения (попытка ${i + 1}/${retries}). Ждем 5 сек...`);
+            await new Promise(r => setTimeout(r, 5000));
         }
     }
-    return { error: "Не удалось получить данные после 3 попыток" };
+    return { error: "Не удалось получить данные после 5 попыток" };
 }
 
 async function getOzonToken() {
@@ -73,11 +83,11 @@ async function getOzonToken() {
     return data.access_token;
 }
 
-// 3. ФОНОВАЯ ЗАГРУЗКА БАЗЫ НА СЕРВЕРЕ
+// 2. Медленная фоновая загрузка с сохранением в файл
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     isBaseLoading = true;
-    console.log("Начинаем безопасную фоновую загрузку базы ПВЗ Ozon...");
+    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (режим невидимки)...");
     
     try {
         const token = await getOzonToken();
@@ -85,7 +95,7 @@ async function loadPvzDatabase() {
 
         let allIds = [];
         let offset = 0;
-        const limit = 1000;
+        const limit = 250;
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         while (true) {
@@ -96,14 +106,16 @@ async function loadPvzDatabase() {
             if (listData.error || !listData.delivery_points || listData.delivery_points.length === 0) break;
             allIds.push(...listData.delivery_points.map(p => p.delivery_point_id));
             offset += limit;
-            await new Promise(r => setTimeout(r, 1000)); // Пауза при листании страниц
+            
+            console.log(`Собрано ID: ${allIds.length}...`);
+            await new Promise(r => setTimeout(r, 2000)); 
         }
 
-        console.log(`Получено ${allIds.length} ID. Загружаем подробности...`);
+        console.log(`✅ УСПЕХ: Получено ${allIds.length} ID. Переходим к адресам...`);
         let points = [];
         
-        for (let i = 0; i < allIds.length; i += 500) {
-            const chunk = allIds.slice(i, i + 500);
+        for (let i = 0; i < allIds.length; i += 100) {
+            const chunk = allIds.slice(i, i + 100);
             const infoData = await safeFetchJson("https://api-delivery.ozon.ru/v1/delivery-point/info", {
                 method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunk })
             });
@@ -113,14 +125,15 @@ async function loadPvzDatabase() {
                     id: p.delivery_point_id,
                     address: p.full_address
                 })));
-                console.log(`Скачано адресов: ${points.length} из ${allIds.length}`);
             }
-            await new Promise(r => setTimeout(r, 1500)); // 1.5 сек пауза, чтобы не злить WAF Ozon
+            await new Promise(r => setTimeout(r, 3500)); 
         }
         
         if (points.length > 0) {
             cachedOzonPoints = points;
-            console.log(`✅ База ПВЗ успешно загружена сервером: ${cachedOzonPoints.length} пунктов.`);
+            // Сохраняем скачанный массив в файл!
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(points));
+            console.log(`✅ УСПЕХ: База (${cachedOzonPoints.length} ПВЗ) успешно скачана и сохранена в файл ${CACHE_FILE}!`);
         }
     } catch (e) {
         console.log(`❌ Ошибка фоновой загрузки ПВЗ: ${e.message}`);
@@ -128,10 +141,15 @@ async function loadPvzDatabase() {
         isBaseLoading = false;
     }
 }
-// Запускаем при старте
-loadPvzDatabase();
-// Обновляем раз в 24 часа
-setInterval(loadPvzDatabase, 24 * 60 * 60 * 1000);
+
+// Запускаем фоновое обновление только если файла кэша нет (при первом старте).
+// Если файл есть, просто ждем еженедельного таймера.
+if (!fs.existsSync(CACHE_FILE)) {
+    loadPvzDatabase();
+}
+
+// 3. Обновление раз в неделю (7 дней * 24 часа * 60 минут * 60 сек * 1000 мс)
+setInterval(loadPvzDatabase, 7 * 24 * 60 * 60 * 1000);
 
 function parseTSV(text) {
     const lines = text.replace(/\r/g, '').trim().split('\n');
@@ -200,10 +218,9 @@ async function getOptimalPackaging(username) {
     } catch (e) { return { error: "Ошибка чтения таблиц Google." }; }
 }
 
-// 4. Подсказки
 app.get('/api/pvz-suggest', (req, res) => {
     if (cachedOzonPoints.length === 0) {
-        return res.json({ points: [{ id: null, address: "База ПВЗ загружается сервером, попробуйте через 1-2 минуты..." }] });
+        return res.json({ points: [{ id: null, address: "Сервер первый раз собирает базу. Пожалуйста, просто введите адрес и нажмите СЧИТАТЬ." }] });
     }
     
     const q = (req.query.q || '').toLowerCase().trim();
@@ -218,7 +235,6 @@ app.get('/api/pvz-suggest', (req, res) => {
     res.json({ points: results });
 });
 
-// 5. Умный расчет (срабатывает и по выпадающему списку, и по кнопке СЧИТАТЬ)
 app.post('/api/delivery-calc', async (req, res) => {
     let { pvzId, targetAddress, tgUser, phone } = req.body;
     if (!tgUser || (!pvzId && !targetAddress)) {
@@ -228,7 +244,7 @@ app.post('/api/delivery-calc', async (req, res) => {
     let finalAddressString = "Неизвестный ПВЗ";
     if (!pvzId && targetAddress) {
         if (cachedOzonPoints.length === 0) {
-            return res.status(500).json({ success: false, error: "База ПВЗ еще загружается, подождите 1-2 минуты." });
+            return res.status(500).json({ success: false, error: "База ПВЗ еще скачивается. Подождите около 20 минут." });
         }
         const searchTerms = targetAddress.toLowerCase().match(/[a-zа-яё0-9]+/g) || [];
         const foundPvz = cachedOzonPoints.find(p => {
@@ -287,7 +303,6 @@ app.post('/api/delivery-calc', async (req, res) => {
 });
 
 app.post('/api/pay', async (req, res) => {
-    // КОД МОДУЛЬБАНКА
     res.json({ success: true, link: 'https://pay.modulbank.ru/' }); 
 });
 
