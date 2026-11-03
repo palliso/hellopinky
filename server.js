@@ -2,7 +2,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const express = require('express');
 const fetch = require('node-fetch');
 const path = require('path');
-const fs = require('fs'); // Добавили модуль для работы с файлами
+const fs = require('fs'); 
 
 const app = express();
 app.use(express.json());
@@ -12,7 +12,6 @@ const CACHE_FILE = path.join(__dirname, 'pvz_cache.json');
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
-// 1. Пытаемся сразу загрузить базу из сохраненного файла при старте
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
@@ -83,17 +82,18 @@ async function getOzonToken() {
     return data.access_token;
 }
 
-// 2. Медленная фоновая загрузка с сохранением в файл
+// 2. Умная загрузка с защитой от бесконечного цикла дубликатов
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     isBaseLoading = true;
-    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (режим невидимки)...");
+    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (защита от дубликатов включена)...");
     
     try {
         const token = await getOzonToken();
         if (!token) throw new Error("Не удалось получить токен");
 
-        let allIds = [];
+        // Используем Set, чтобы автоматически отсекать дубликаты
+        let allIds = new Set();
         let offset = 0;
         const limit = 250;
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
@@ -104,18 +104,33 @@ async function loadPvzDatabase() {
             });
 
             if (listData.error || !listData.delivery_points || listData.delivery_points.length === 0) break;
-            allIds.push(...listData.delivery_points.map(p => p.delivery_point_id));
-            offset += limit;
             
-            console.log(`Собрано ID: ${allIds.length}...`);
+            let newIdsCount = 0;
+            for (const p of listData.delivery_points) {
+                if (!allIds.has(p.delivery_point_id)) {
+                    allIds.add(p.delivery_point_id);
+                    newIdsCount++;
+                }
+            }
+
+            // Если Ozon не дал ни одного нового ID, значит он пошел по кругу. Прерываем цикл!
+            if (newIdsCount === 0) {
+                console.log("🛑 Ozon начал повторять адреса по кругу. Сбор ID завершен!");
+                break;
+            }
+
+            offset += limit;
+            console.log(`Собрано уникальных ID: ${allIds.size}...`);
             await new Promise(r => setTimeout(r, 2000)); 
         }
 
-        console.log(`✅ УСПЕХ: Получено ${allIds.length} ID. Переходим к адресам...`);
-        let points = [];
+        // Превращаем Set обратно в массив
+        const uniqueIdsArray = Array.from(allIds);
+        console.log(`✅ УСПЕХ: Получено ${uniqueIdsArray.length} уникальных ID. Переходим к адресам...`);
         
-        for (let i = 0; i < allIds.length; i += 100) {
-            const chunk = allIds.slice(i, i + 100);
+        let points = [];
+        for (let i = 0; i < uniqueIdsArray.length; i += 100) {
+            const chunk = uniqueIdsArray.slice(i, i + 100);
             const infoData = await safeFetchJson("https://api-delivery.ozon.ru/v1/delivery-point/info", {
                 method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunk })
             });
@@ -131,7 +146,6 @@ async function loadPvzDatabase() {
         
         if (points.length > 0) {
             cachedOzonPoints = points;
-            // Сохраняем скачанный массив в файл!
             fs.writeFileSync(CACHE_FILE, JSON.stringify(points));
             console.log(`✅ УСПЕХ: База (${cachedOzonPoints.length} ПВЗ) успешно скачана и сохранена в файл ${CACHE_FILE}!`);
         }
@@ -142,13 +156,10 @@ async function loadPvzDatabase() {
     }
 }
 
-// Запускаем фоновое обновление только если файла кэша нет (при первом старте).
-// Если файл есть, просто ждем еженедельного таймера.
 if (!fs.existsSync(CACHE_FILE)) {
     loadPvzDatabase();
 }
 
-// 3. Обновление раз в неделю (7 дней * 24 часа * 60 минут * 60 сек * 1000 мс)
 setInterval(loadPvzDatabase, 7 * 24 * 60 * 60 * 1000);
 
 function parseTSV(text) {
@@ -244,7 +255,7 @@ app.post('/api/delivery-calc', async (req, res) => {
     let finalAddressString = "Неизвестный ПВЗ";
     if (!pvzId && targetAddress) {
         if (cachedOzonPoints.length === 0) {
-            return res.status(500).json({ success: false, error: "База ПВЗ еще скачивается. Подождите около 20 минут." });
+            return res.status(500).json({ success: false, error: "База ПВЗ еще скачивается. Подождите пару минут." });
         }
         const searchTerms = targetAddress.toLowerCase().match(/[a-zа-яё0-9]+/g) || [];
         const foundPvz = cachedOzonPoints.find(p => {
