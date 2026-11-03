@@ -82,49 +82,49 @@ async function getOzonToken() {
     return data.access_token;
 }
 
-// 2. Умная загрузка с защитой от бесконечного цикла дубликатов
+// 2. Умная загрузка через современный last_id
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     isBaseLoading = true;
-    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (защита от дубликатов включена)...");
+    console.log("⏳ Начинаем скачивание актуальной базы ПВЗ Ozon (перелистывание по last_id)...");
     
     try {
         const token = await getOzonToken();
         if (!token) throw new Error("Не удалось получить токен");
 
-        // Используем Set, чтобы автоматически отсекать дубликаты
         let allIds = new Set();
-        let offset = 0;
+        let lastId = undefined; // Теперь используем last_id вместо offset
         const limit = 250;
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         while (true) {
             const listData = await safeFetchJson("https://api-delivery.ozon.ru/v1/delivery-point/list", {
-                method: "POST", headers, body: JSON.stringify({ pagination: { limit, offset } })
+                method: "POST", headers, body: JSON.stringify({ pagination: { limit, last_id: lastId } }) // Отправляем last_id
             });
 
             if (listData.error || !listData.delivery_points || listData.delivery_points.length === 0) break;
             
             let newIdsCount = 0;
+            let currentLastId = undefined;
+
             for (const p of listData.delivery_points) {
                 if (!allIds.has(p.delivery_point_id)) {
                     allIds.add(p.delivery_point_id);
                     newIdsCount++;
                 }
+                currentLastId = p.delivery_point_id; // Запоминаем ID последнего пункта
             }
 
-            // Если Ozon не дал ни одного нового ID, значит он пошел по кругу. Прерываем цикл!
-            if (newIdsCount === 0) {
-                console.log("🛑 Ozon начал повторять адреса по кругу. Сбор ID завершен!");
+            if (newIdsCount === 0 || currentLastId === lastId) {
+                console.log("🛑 Ozon больше не дает новых адресов. Сбор ID завершен!");
                 break;
             }
 
-            offset += limit;
+            lastId = currentLastId; // Передаем последний ID для следующего запроса
             console.log(`Собрано уникальных ID: ${allIds.size}...`);
             await new Promise(r => setTimeout(r, 2000)); 
         }
 
-        // Превращаем Set обратно в массив
         const uniqueIdsArray = Array.from(allIds);
         console.log(`✅ УСПЕХ: Получено ${uniqueIdsArray.length} уникальных ID. Переходим к адресам...`);
         
