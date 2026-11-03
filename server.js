@@ -70,7 +70,7 @@ async function getOzonToken() {
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     isBaseLoading = true;
-    console.log(`⏳ Запуск фонового скачивания. Текущие адресов в базе: ${cachedOzonPoints.length}`);
+    console.log(`⏳ Запуск фонового скачивания по спецификации Ozon API...`);
     
     try {
         const token = await getOzonToken();
@@ -79,101 +79,68 @@ async function loadPvzDatabase() {
             return;
         }
 
-        let allIds = new Set(cachedOzonPoints.map(p => p.id));
-        let offset = cachedOzonPoints.length > 0 ? cachedOzonPoints.length : 0;
-        const limit = 100;
+        let allPoints = [...cachedOzonPoints];
+        let allIds = new Set(allPoints.map(p => p.id));
+        let cursor = null;
+        const limit = 100; // Безопасный лимит по документации
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
-        let failsCount = 0;
-
-        while (failsCount < 5) {
-            try {
-                // Передаем пагинацию во всех мыслимых вариантах, чтобы Ozon не мог ее проигнорировать
-                const bodyPayload = {
-                    filter: {},
+        let hasMore = true;
+        while (hasMore) {
+            const bodyPayload = {
+                pagination: {
                     limit: limit,
-                    offset: offset,
-                    pagination: {
-                        limit: limit,
-                        offset: offset
-                    }
-                };
-
-                const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
-                    method: "POST", headers, body: JSON.stringify(bodyPayload)
-                });
-                
-                if (!listRes.ok) {
-                    failsCount++;
-                    console.log(`⚠️ Ozon ответил статусом ${listRes.status} при offset=${offset}. Ждем 5 сек...`);
-                    await new Promise(r => setTimeout(r, 5000));
-                    continue;
+                    ...(cursor ? { cursor: cursor } : {})
                 }
+            };
 
-                const listData = await listRes.json();
-                
-                // Если Ozon вернул пустой массив — выведем это в логи, чтобы видеть причину
-                if (!listData.delivery_points || listData.delivery_points.length === 0) {
-                    console.log(`🛑 Ozon вернул пустой список на offset=${offset}. Пробуем сдвинуть смещение принудительно...`);
-                    offset += limit; // Пробуем перешагнуть
-                    failsCount++;
-                    await new Promise(r => setTimeout(r, 3000));
-                    continue;
-                }
-                
-                let chunkIds = [];
-                let newFound = 0;
-                for (const p of listData.delivery_points) {
-                    if (!allIds.has(p.delivery_point_id)) {
-                        chunkIds.push(p.delivery_point_id);
-                        allIds.add(p.delivery_point_id);
-                        newFound++;
-                    }
-                }
-
-                console.log(`📥 Получено точек от Ozon: ${listData.delivery_points.length}, из них новых: ${newFound} (при offset=${offset})`);
-
-                if (chunkIds.length === 0) {
-                    offset += limit;
-                    continue;
-                }
-
-                const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
-                    method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunkIds })
-                });
-                
-                if (infoRes.ok) {
-                    const infoData = await infoRes.json();
-                    if (infoData.delivery_points) {
-                        const validPoints = infoData.delivery_points.filter(p => p.is_active).map(p => ({
-                            id: p.delivery_point_id,
-                            address: p.full_address
-                        }));
-                        
-                        let addedCount = 0;
-                        for (const vp of validPoints) {
-                            if (!cachedOzonPoints.some(existing => existing.id === vp.id)) {
-                                cachedOzonPoints.push(vp);
-                                addedCount++;
-                            }
-                        }
-                        
-                        fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
-                        console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе на диске: ${cachedOzonPoints.length}`);
-                    }
-                }
-
-                offset += limit;
-                failsCount = 0;
-                await new Promise(r => setTimeout(r, 3000)); // Пауза 3 секунды
-
-            } catch (err) {
-                failsCount++;
-                console.log(`⚠️ Ошибка в цикле скачивания: ${err.message}`);
+            const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
+                method: "POST", headers, body: JSON.stringify(bodyPayload)
+            });
+            
+            if (!listRes.ok) {
+                console.log(`⚠️ Озон ответил статусом ${listRes.status}. Пауза 5 сек...`);
                 await new Promise(r => setTimeout(r, 5000));
+                continue;
             }
+
+            const listData = await listRes.json();
+            
+            if (!listData.delivery_points || listData.delivery_points.length === 0) {
+                break;
+            }
+            
+            let addedCount = 0;
+            for (const p of listData.delivery_points) {
+                // Извлекаем id и адрес прямо из структуры ответа метода list
+                const pointId = p.delivery_point_id || p.id;
+                const pointAddr = p.full_address || p.address;
+                
+                if (pointId && !allIds.has(pointId)) {
+                    allIds.add(pointId);
+                    allPoints.push({
+                        id: pointId,
+                        address: pointAddr || "Адрес уточняется"
+                    });
+                    addedCount++;
+                }
+            }
+
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(allPoints));
+            console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе: ${allPoints.length}`);
+
+            // Проверяем наличие следующей страницы по курсору из ответа Ozon
+            if (listData.next_cursor) {
+                cursor = listData.next_cursor;
+            } else {
+                hasMore = false;
+            }
+
+            // Вежливая пауза между страницами для обхода WAF
+            await new Promise(r => setTimeout(r, 3000));
         }
 
+        cachedOzonPoints = allPoints;
         console.log(`✅ ИТОГ: Загрузка завершена. Всего адресов в базе: ${cachedOzonPoints.length}`);
     } catch (e) {
         console.log(`❌ Критическая ошибка: ${e.message}`);
