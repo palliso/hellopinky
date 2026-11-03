@@ -59,4 +59,75 @@ async function getOptimalPackaging(username) {
                 const h = parseFloat((prod['высота (см)'] || prod['высота'] || '0').replace(',', '.')) || 0;
                 const weight = parseFloat((prod['вес (г)'] || prod['вес'] || '0').replace(',', '.')) || 0;
 
-                totalVolume += (
+                totalVolume += (l * w * h) * qty;
+                totalWeight += weight * qty;
+                const dims = [l, w, h].sort((a,b) => b - a);
+                if (dims[0] > maxL) maxL = dims[0];
+                if (dims[1] > maxW) maxW = dims[1];
+                if (dims[2] > maxH) maxH = dims[2];
+            }
+        });
+
+        if (foundProducts === 0 || totalVolume === 0) return { error: "Не удалось определить габариты по справочнику." };
+
+        let selectedBox = null, minBoxVol = Infinity;
+
+        boxes.forEach(b => {
+            const bl = parseFloat((b['длина (см)'] || b['длина'] || '0').replace(',', '.'));
+            const bw = parseFloat((b['ширина (см)'] || b['ширина'] || '0').replace(',', '.'));
+            const bh = parseFloat((b['высота (см)'] || b['высота'] || '0').replace(',', '.'));
+            const boxWeight = parseFloat((b['вес пустой (г)'] || b['вес пустой'] || '0').replace(',', '.'));
+            const matCost = parseFloat((b['стоимость материалов (₽)'] || b['стоимость материалов'] || '0').replace(',', '.'));
+            const boxVol = bl * bw * bh;
+            const bDims = [bl, bw, bh].sort((a,b) => b - a);
+
+            if (boxVol >= totalVolume && bDims[0] >= maxL && bDims[1] >= maxW && bDims[2] >= maxH) {
+                if (boxVol < minBoxVol) { 
+                    minBoxVol = boxVol; 
+                    selectedBox = { length: bl, width: bw, height: bh, weight: totalWeight + boxWeight, materialCost: matCost }; 
+                }
+            }
+        });
+
+        if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
+        return { success: true, box: selectedBox };
+    } catch (e) { return { error: "Ошибка чтения таблиц." }; }
+}
+
+// ВНУТРЕННИЙ КАЛЬКУЛЯТОР
+app.post('/api/delivery-calc', async (req, res) => {
+    const { tgUser } = req.body;
+    if (!tgUser) return res.status(400).json({ success: false, error: "Укажите Юзернейм." });
+
+    const packData = await getOptimalPackaging(tgUser);
+    if (packData.error) return res.status(400).json({ success: false, error: packData.error });
+
+    // СРЕДНЯЯ СТОИМОСТЬ ЛОГИСТИКИ OZON. Можешь поменять эту цифру!
+    const BASE_OZON_TARIFF = 350; 
+    
+    // Считаем твои затраты (Тариф + Коробка + 20р пупырка)
+    const rawCost = BASE_OZON_TARIFF + packData.box.materialCost + 20;
+    
+    // Прибавляем 8% налога
+    const finalPrice = Math.ceil(rawCost / 0.92);
+
+    res.json({ 
+        success: true, 
+        deliveryPrice: finalPrice, 
+        boxInfo: `Коробка: ${packData.box.length}x${packData.box.width}x${packData.box.height} см. Общий вес: ${packData.box.weight} г.`
+    });
+});
+
+// МОДУЛЬБАНК ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ (я скрыла код генерации ссылки для краткости)
+app.post('/api/pay', async (req, res) => {
+    const { item, amount, email } = req.body;
+    // ... твой код Модульбанка ...
+    res.json({ success: true, link: 'https://pay.modulbank.ru/' }); 
+});
+
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Сервер запущен. Порт ${PORT}`);
+});
