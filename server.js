@@ -88,28 +88,50 @@ async function loadPvzDatabase() {
 
         while (failsCount < 5) {
             try {
+                // Передаем пагинацию во всех мыслимых вариантах, чтобы Ozon не мог ее проигнорировать
+                const bodyPayload = {
+                    filter: {},
+                    limit: limit,
+                    offset: offset,
+                    pagination: {
+                        limit: limit,
+                        offset: offset
+                    }
+                };
+
                 const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
-                    method: "POST", headers, body: JSON.stringify({ pagination: { limit, offset } })
+                    method: "POST", headers, body: JSON.stringify(bodyPayload)
                 });
                 
                 if (!listRes.ok) {
                     failsCount++;
-                    await new Promise(r => setTimeout(r, 10000));
+                    console.log(`⚠️ Ozon ответил статусом ${listRes.status} при offset=${offset}. Ждем 5 сек...`);
+                    await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
 
                 const listData = await listRes.json();
+                
+                // Если Ozon вернул пустой массив — выведем это в логи, чтобы видеть причину
                 if (!listData.delivery_points || listData.delivery_points.length === 0) {
-                    break;
+                    console.log(`🛑 Ozon вернул пустой список на offset=${offset}. Пробуем сдвинуть смещение принудительно...`);
+                    offset += limit; // Пробуем перешагнуть
+                    failsCount++;
+                    await new Promise(r => setTimeout(r, 3000));
+                    continue;
                 }
                 
                 let chunkIds = [];
+                let newFound = 0;
                 for (const p of listData.delivery_points) {
                     if (!allIds.has(p.delivery_point_id)) {
                         chunkIds.push(p.delivery_point_id);
                         allIds.add(p.delivery_point_id);
+                        newFound++;
                     }
                 }
+
+                console.log(`📥 Получено точек от Ozon: ${listData.delivery_points.length}, из них новых: ${newFound} (при offset=${offset})`);
 
                 if (chunkIds.length === 0) {
                     offset += limit;
@@ -143,17 +165,18 @@ async function loadPvzDatabase() {
 
                 offset += limit;
                 failsCount = 0;
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r => setTimeout(r, 3000)); // Пауза 3 секунды
 
             } catch (err) {
                 failsCount++;
-                await new Promise(r => setTimeout(r, 10000));
+                console.log(`⚠️ Ошибка в цикле скачивания: ${err.message}`);
+                await new Promise(r => setTimeout(r, 5000));
             }
         }
 
         console.log(`✅ ИТОГ: Загрузка завершена. Всего адресов в базе: ${cachedOzonPoints.length}`);
     } catch (e) {
-        console.log(`❌ Ошибка: ${e.message}`);
+        console.log(`❌ Критическая ошибка: ${e.message}`);
     } finally {
         isBaseLoading = false;
     }
