@@ -13,8 +13,8 @@ const TSV_PRODUCTS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr
 const TSV_BOXES = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=1518762544&single=true&output=tsv";
 
 // --- КЛЮЧИ OZON (ОБЯЗАТЕЛЬНО ВСТАВЬ СВОИ) ---
-const OZON_CLIENT_ID = "ТВОЙ_CLIENT_ID";
-const OZON_CLIENT_SECRET = "ТВОЙ_CLIENT_SECRET";
+const OZON_CLIENT_ID = "f0f0d638-7c3b-4f17-a5a1-d44b63bc8b1e";
+const OZON_CLIENT_SECRET = "a5a1d29c05115394f19204c5dcfd507a86f227fe193feb903d07946bdc6e1579";
 const OZON_SHIPMENT_METHOD_ID = 1020005031049340;
 
 // --- КЛЮЧИ ОПЛАТЫ ---
