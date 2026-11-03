@@ -51,19 +51,20 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function calculateDelivery() {
-    const address = selectedPvzId;
+    const addressText = document.getElementById('pvzAddressInput').value.trim();
     const tg = document.getElementById('tgInput').value.trim();
     const phone = document.getElementById('phoneInput').value.trim();
     const costBox = document.getElementById('deliveryInfoBox');
     const costDisplay = document.getElementById('deliveryCostDisplay');
     
-    if (!address || !tg) {
-        costBox.style.display = 'none';
-        currentDeliveryCost = 0;
-        updateTotal();
+    if (!addressText || !tg) {
+        showToast('Пожалуйста, укажите адрес ПВЗ и юзернейм.');
         return;
     }
     
+    // Прячем список подсказок, если он был открыт
+    document.getElementById('autocompleteList').style.display = 'none';
+
     costBox.style.display = 'block';
     costDisplay.textContent = 'ищем ПВЗ и считаем...';
 
@@ -71,7 +72,12 @@ async function calculateDelivery() {
         const response = await fetch('/api/delivery-calc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ targetAddress: address, tgUser: tg, phone: phone })
+            body: JSON.stringify({ 
+                pvzId: typeof selectedPvzId !== 'undefined' ? selectedPvzId : null, 
+                targetAddress: addressText, 
+                tgUser: tg, 
+                phone: phone 
+            })
         });
 
         const data = await response.json();
@@ -79,7 +85,7 @@ async function calculateDelivery() {
         if (data.success) {
             currentDeliveryCost = data.deliveryPrice;
             confirmedPvzAddress = data.foundAddress;
-            costDisplay.innerHTML = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽ <br><span style="font-size:11px; color:#666;">(Найден: ${confirmedPvzAddress})</span>`;
+            costDisplay.innerHTML = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽ <br><span style="font-size:11px; color:#666;">(ПВЗ: ${confirmedPvzAddress})</span>`;
         } else {
             costDisplay.textContent = data.error || 'Ошибка расчета';
             currentDeliveryCost = 0;
