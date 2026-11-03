@@ -1,5 +1,6 @@
 let currentPaymentType = 'main';
 let currentDeliveryCost = 0;
+let confirmedPvzAddress = "";
 
 document.addEventListener('DOMContentLoaded', () => {
   const tabBtns = document.querySelectorAll('.tab-btn');
@@ -8,11 +9,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const itemInput = document.getElementById('itemInput');
   const amountInput = document.getElementById('amountInput');
   const tgInput = document.getElementById('tgInput');
+  const phoneInput = document.getElementById('phoneInput');
+  const pvzAddressInput = document.getElementById('pvzAddressInput');
 
   tabBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.preventDefault(); 
-      tabBtns.forEach(b => { b.classList.remove('active'); b.style.background = 'transparent'; b.style.color = '#ff4d85'; });
+      tabBtns.forEach(b => {
+        b.classList.remove('active');
+        b.style.background = 'transparent';
+        b.style.color = '#ff4d85';
+      });
       
       const clickedBtn = e.currentTarget;
       clickedBtn.classList.add('active');
@@ -26,11 +33,17 @@ document.addEventListener('DOMContentLoaded', () => {
         deliveryFields.style.display = 'block';
         itemInput.required = false;
         amountInput.required = false;
+        tgInput.required = true;
+        phoneInput.required = true;
+        pvzAddressInput.required = true;
       } else {
         productFields.style.display = 'block';
         deliveryFields.style.display = 'none';
         itemInput.required = true;
         amountInput.required = true;
+        tgInput.required = false;
+        phoneInput.required = false;
+        pvzAddressInput.required = false;
       }
       updateTotal();
     });
@@ -38,33 +51,39 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function calculateDelivery() {
+    const address = document.getElementById('pvzAddressInput').value.trim();
     const tg = document.getElementById('tgInput').value.trim();
+    const phone = document.getElementById('phoneInput').value.trim();
     const costBox = document.getElementById('deliveryInfoBox');
     const costDisplay = document.getElementById('deliveryCostDisplay');
-    const boxDisplay = document.getElementById('boxInfoDisplay');
     
-    if (!tg) return;
+    if (!address || !tg) {
+        costBox.style.display = 'none';
+        currentDeliveryCost = 0;
+        updateTotal();
+        return;
+    }
     
     costBox.style.display = 'block';
-    costDisplay.textContent = 'считаем...';
-    boxDisplay.textContent = '';
+    costDisplay.textContent = 'ищем ПВЗ и считаем...';
 
     try {
         const response = await fetch('/api/delivery-calc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tgUser: tg })
+            body: JSON.stringify({ targetAddress: address, tgUser: tg, phone: phone })
         });
 
         const data = await response.json();
 
         if (data.success) {
             currentDeliveryCost = data.deliveryPrice;
-            costDisplay.textContent = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽`;
-            boxDisplay.textContent = data.boxInfo; // Выводит размеры коробки!
+            confirmedPvzAddress = data.foundAddress;
+            costDisplay.innerHTML = `${currentDeliveryCost.toLocaleString('ru-RU')} ₽ <br><span style="font-size:11px; color:#666;">(Найден: ${confirmedPvzAddress})</span>`;
         } else {
             costDisplay.textContent = data.error || 'Ошибка расчета';
             currentDeliveryCost = 0;
+            confirmedPvzAddress = "";
         }
     } catch (err) {
         costDisplay.textContent = 'Ошибка сети';
@@ -92,16 +111,28 @@ async function handlePayment(e) {
 
   if (currentPaymentType === 'delivery') {
     const tg = document.getElementById('tgInput').value.trim();
-    if (currentDeliveryCost <= 0) { showToast('Сначала рассчитайте доставку.'); return; }
+    const phone = document.getElementById('phoneInput').value.trim();
     
-    finalItem = `Доставка Ozon (${tg})`;
+    if (currentDeliveryCost <= 0 || !confirmedPvzAddress) {
+        showToast('Сначала нажмите "СЧИТАТЬ" и дождитесь расчета стоимости.');
+        return;
+    }
+    if (!phone) {
+        showToast('Пожалуйста, укажите номер телефона.');
+        return;
+    }
+    finalItem = `Доставка Ozon (${tg}, тел: ${phone}, ПВЗ: ${confirmedPvzAddress})`;
     finalAmount = currentDeliveryCost;
   } else {
-    finalItem = document.getElementById('itemInput').value.trim();
+    let typeName = currentPaymentType === 'preorder' ? 'Предзаказ' : 'Оплата';
+    finalItem = `${typeName}: ${document.getElementById('itemInput').value.trim()}`;
     finalAmount = Number(document.getElementById('amountInput').value) || 0;
   }
 
-  if (btn) { btn.textContent = 'ГЕНЕРАЦИЯ СЧЕТА...'; btn.disabled = true; }
+  if (btn) {
+    btn.textContent = 'ГЕНЕРАЦИЯ СЧЕТА...';
+    btn.disabled = true;
+  }
 
   try {
     const response = await fetch('/api/pay', {
@@ -111,8 +142,9 @@ async function handlePayment(e) {
     });
 
     const data = await response.json();
+
     if (data.success && data.link) {
-      showToast('Счёт создан!');
+      showToast('Счёт создан! Перенаправляем на оплату...');
       setTimeout(() => window.location.href = data.link, 600);
     } else {
       showToast(data.error || 'Ошибка формирования счёта.');
