@@ -1,4 +1,6 @@
+// Отключаем проверку SSL-сертификатов для API Модульбанка
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const express = require('express');
 const fetch = require('node-fetch');
 const path = require('path');
@@ -6,6 +8,8 @@ const fs = require('fs');
 
 const app = express();
 app.use(express.json());
+
+// Раздаем статические файлы (HTML, CSS, JS) из папки public
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ==========================================
@@ -16,12 +20,16 @@ const CP_ID = "pk_f36ba0fb530c9daf8fb7b97ec5dee";
 const CP_SECRET = "f92c854df15751ca8132d7b2e0b0078a";
 const MY_INN = "860231492889";
 const REDIRECT_URL = "https://hellopinky.ru";
-const TARGET_RETAIL_POINT_ID = "a828d71d-f5b5-4959-a605-d9a0192d8416";
+
+// Конфигурация торговых точек для разных вкладок
+const RETAIL_POINTS = {
+    main: "8a838daf-cd51-474a-b444-854e8f8263b6", 
+    preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
+};
 
 let state = {
     waiting: {},
-    history: [],
-    retailPointId: TARGET_RETAIL_POINT_ID
+    history: []
 };
 
 function addLog(msg) {
@@ -31,11 +39,11 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-async function createDynamicQr(amount, description) {
+async function createDynamicQr(amount, description, retailPointId) {
     const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
     const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
     const payload = {
-        retailPointId: state.retailPointId,
+        retailPointId: retailPointId,
         sum: Number(amount),
         extraInfo: description.substring(0, 140),
         redirectUrl: REDIRECT_URL
@@ -200,7 +208,7 @@ async function loadPvzDatabase() {
 
         let allPoints = [];
         let cursor = "";
-        const limit = 100; 
+        const limit = 100; // Ozon допускает строго не более 100 элементов за раз в методе /info
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -293,7 +301,12 @@ async function loadPvzDatabase() {
     }
 }
 
+// Запускаем робот скачивания базы после старта сервера
 setTimeout(() => { loadPvzDatabase(); }, 2000);
+
+// ==========================================
+// 3. ПАРСЕР ТАБЛИЦ И РАСЧЕТ УПАКОВКИ
+// ==========================================
 
 function parseTSV(text) {
     const lines = text.replace(/\r/g, '').trim().split('\n');
@@ -368,7 +381,7 @@ async function getOptimalPackaging(username) {
 }
 
 // ==========================================
-// 3. API ЭНДПОИНТЫ
+// 4. API МАРШРУТЫ И ENDPOINTS
 // ==========================================
 
 app.get('/api/pvz-suggest', (req, res) => {
@@ -461,19 +474,22 @@ app.post('/api/delivery-calc', async (req, res) => {
     }
 });
 
-// Боевой маршрут оплаты через Модульбанк
 app.post('/api/pay', async (req, res) => {
-    const { item, amount, email } = req.body;
+    // Получаем paymentType, чтобы определить кассу (ТВОЙ РОДНОЙ КОД)
+    const { item, amount, email, paymentType } = req.body;
     
     if (!item || !amount || amount <= 0 || !email) {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    const { link, qrcId } = await createDynamicQr(amount, item);
+    // Если paymentType = delivery, fallback уйдет на RETAIL_POINTS.main
+    const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
+
+    const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
     
     if (link && qrcId) {
         state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
-        addLog(`🌸 Создан СБП QR для ${email} на сумму ${amount} ₽ (${item})`);
+        addLog(`🌸 Создан СБП QR (${paymentType || 'main'}) для ${email} на сумму ${amount} ₽ (${item})`);
         return res.json({ success: true, link });
     }
 
