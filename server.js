@@ -8,7 +8,6 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Умный выбор пути для кэша: на облачных хостингах используем постоянный том /data/
 const CACHE_DIR = '/data';
 const CACHE_FILE = fs.existsSync(CACHE_DIR) 
     ? path.join(CACHE_DIR, 'pvz_cache.json') 
@@ -17,14 +16,11 @@ const CACHE_FILE = fs.existsSync(CACHE_DIR)
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
-// Мгновенная загрузка кэша при старте
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        console.log(`✅ Кэш ПВЗ загружен из ${CACHE_FILE}. Точек в базе: ${cachedOzonPoints.length}`);
-    } catch (e) {
-        console.log(`⚠️ Ошибка чтения кэша, будет скачан заново.`);
-    }
+        console.log(`✅ Кэш ПВЗ загружен. Точек: ${cachedOzonPoints.length}`);
+    } catch (e) {}
 }
 
 const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
@@ -70,34 +66,21 @@ async function getOzonToken() {
         });
         const data = await res.json();
         return data.access_token;
-    } catch (e) {
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
-// Строгое скачивание по официальной документации (pagination: { limit, cursor })
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
-    
-    // Если база уже в памяти — не нагружаем Ozon
-    if (cachedOzonPoints.length > 5000) {
-        console.log(`✨ База уже актуальна (${cachedOzonPoints.length} точек).`);
-        return;
-    }
+    if (cachedOzonPoints.length > 5000) return;
 
     isBaseLoading = true;
-    console.log(`⏳ Старт выгрузки ПВЗ. Сохраняем в: ${CACHE_FILE}`);
-    
     try {
         const token = await getOzonToken();
-        if (!token) {
-            isBaseLoading = false;
-            return;
-        }
+        if (!token) { isBaseLoading = false; return; }
 
         let allPoints = [];
         let cursor = "";
-        const limit = 250; // Порции по 250 штук, как ты просил
+        const limit = 250;
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -105,11 +88,8 @@ async function loadPvzDatabase() {
 
         while (hasMore && failCount < 5) {
             try {
-                // Точное соответствие формату из спецификации
                 const bodyPayload = { pagination: { limit: limit } };
-                if (cursor) {
-                    bodyPayload.pagination.cursor = cursor;
-                }
+                if (cursor) bodyPayload.pagination.cursor = cursor;
 
                 const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
                     method: "POST", headers, body: JSON.stringify(bodyPayload)
@@ -117,60 +97,33 @@ async function loadPvzDatabase() {
                 
                 if (!listRes.ok) {
                     failCount++;
-                    console.log(`⚠️ Ozon ответил ${listRes.status}. Пауза 5 сек...`);
                     await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
 
                 const listData = await listRes.json();
-                
-                if (!listData.delivery_points || listData.delivery_points.length === 0) {
-                    break;
-                }
+                if (!listData.delivery_points || listData.delivery_points.length === 0) break;
                 
                 for (const p of listData.delivery_points) {
                     const pointId = p.delivery_point_id || p.id;
                     const pointAddr = p.full_address || p.address;
-                    if (pointId) {
-                        allPoints.push({
-                            id: pointId,
-                            address: pointAddr || "Адрес уточняется"
-                        });
-                    }
+                    if (pointId) allPoints.push({ id: pointId, address: pointAddr || "Адрес уточняется" });
                 }
 
-                console.log(`📥 Скачано: ${allPoints.length} ПВЗ...`);
-
-                if (listData.next_cursor) {
-                    cursor = listData.next_cursor;
-                    failCount = 0;
-                } else {
-                    hasMore = false;
-                }
-
-                // Железобетонная пауза 2 секунды, чтобы не блокировал WAF
+                if (listData.next_cursor) { cursor = listData.next_cursor; failCount = 0; } 
+                else { hasMore = false; }
                 await new Promise(r => setTimeout(r, 2000));
 
-            } catch (err) {
-                failCount++;
-                console.log(`⚠️ Ошибка соединения: ${err.message}. Ждем 5 сек...`);
-                await new Promise(r => setTimeout(r, 5000));
-            }
+            } catch (err) { failCount++; await new Promise(r => setTimeout(r, 5000)); }
         }
 
         if (allPoints.length > 0) {
             cachedOzonPoints = allPoints;
             fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
-            console.log(`✅ ИТОГ: База полностью загружена и сохранена на диск. Всего: ${cachedOzonPoints.length}`);
         }
-    } catch (e) {
-        console.log(`❌ Критическая ошибка загрузки: ${e.message}`);
-    } finally {
-        isBaseLoading = false;
-    }
+    } catch (e) {} finally { isBaseLoading = false; }
 }
 
-// Запуск скачивания с небольшой задержкой при старте
 setTimeout(() => { loadPvzDatabase(); }, 2000);
 
 function parseTSV(text) {
@@ -197,11 +150,16 @@ async function getOptimalPackaging(username) {
         if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены." };
 
         let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0;
+        let itemNames = []; // <--- ЗДЕСЬ СОБИРАЕМ СПИСОК ТОВАРОВ
+
         userOrders.forEach(o => {
             const orderItemName = (o['товар (точное название)'] || o['товар'] || '').trim().toLowerCase();
+            const qty = parseInt(o['кол-во'] || '1') || 1;
+            
+            if (orderItemName) itemNames.push(`${orderItemName} (${qty} шт.)`); // Записываем позицию
+
             const prod = products.find(p => (p['товар'] || '').trim().toLowerCase() === orderItemName);
             if (prod) {
-                const qty = parseInt(o['кол-во'] || '1') || 1;
                 const l = parseFloat((prod['длина (см)'] || '0').replace(',', '.')) || 0;
                 const w = parseFloat((prod['ширина (см)'] || '0').replace(',', '.')) || 0;
                 const h = parseFloat((prod['высота (см)'] || '0').replace(',', '.')) || 0;
@@ -236,7 +194,7 @@ async function getOptimalPackaging(username) {
         });
 
         if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
-        return { success: true, box: selectedBox };
+        return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; // Передаем товары
     } catch (e) { return { error: "Ошибка чтения таблиц Google." }; }
 }
 
@@ -254,7 +212,7 @@ app.get('/api/pvz-suggest', (req, res) => {
 });
 
 app.post('/api/delivery-calc', async (req, res) => {
-    let { pvzId, targetAddress, tgUser, phone } = req.body;
+    let { pvzId, targetAddress, tgUser, phone, needInsurance, insAmount } = req.body;
     if (!tgUser || (!pvzId && !targetAddress)) {
         return res.status(400).json({ success: false, error: "Укажите адрес ПВЗ и Юзернейм." });
     }
@@ -267,7 +225,7 @@ app.post('/api/delivery-calc', async (req, res) => {
             return searchTerms.every(term => addrNorm.includes(term));
         });
         
-        if (!foundPvz) return res.status(400).json({ success: false, error: "ПВЗ не найден. Уточните адрес." });
+        if (!foundPvz) return res.status(400).json({ success: false, error: "ПВЗ не найден." });
         pvzId = foundPvz.id;
         finalAddressString = foundPvz.address;
     } else if (pvzId) {
@@ -281,13 +239,19 @@ app.post('/api/delivery-calc', async (req, res) => {
     const token = await getOzonToken();
     if (!token) return res.status(500).json({ success: false, error: "Ошибка токена Ozon." });
 
+    // Обработка страховки: если пользователь ее включил и ввел сумму, ставим ее
+    let declaredValue = "100.00"; // Минимальная базовая оценка
+    if (needInsurance && parseFloat(insAmount) > 0) {
+        declaredValue = parseFloat(insAmount).toFixed(2);
+    }
+
     const url = "https://api-delivery.ozon.ru/v1/order/checkout";
     const payload = {
         recipient: { phone_number: phone || "+79990000000" },
         postings: [{
             request_id: 1,
             shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
-            declared_value: { amount: "100.00", currency_code: "RUB" },
+            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, // Передача оценки стоимости в Ozon
             dimensions: { 
                 weight_g: Math.ceil(packData.box.weight), 
                 length_mm: Math.ceil(packData.box.length * 10),
@@ -307,8 +271,17 @@ app.post('/api/delivery-calc', async (req, res) => {
         if (resCheck.ok) {
             const data = await resCheck.json();
             const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
-            const finalPrice = Math.ceil((ozonTariff + packData.box.materialCost + 20) / 0.92);
-            res.json({ success: true, deliveryPrice: finalPrice, foundAddress: finalAddressString });
+            const ozonInsurance = parseFloat(data.results[0]?.posting?.estimated_insurance_cost?.amount) || 0; // Получение расчета страховки из Ozon
+            
+            // Включаем страховку от Ozon в итоговую сумму
+            const finalPrice = Math.ceil((ozonTariff + ozonInsurance + packData.box.materialCost + 20) / 0.92);
+            
+            res.json({ 
+                success: true, 
+                deliveryPrice: finalPrice, 
+                foundAddress: finalAddressString, 
+                itemsStr: packData.itemsStr // Возвращаем найденные позиции на клиент
+            });
         } else {
             res.status(500).json({ success: false, error: `ПВЗ недоступен для расчета.` });
         }
