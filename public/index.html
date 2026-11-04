@@ -26,7 +26,6 @@
           <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Доставка</button>
         </div>
 
-        <!-- Поля для Основных оплат и Предзаказов -->
         <div id="productFields">
           <div class="form-group">
             <label for="itemInput">Ваши позиции</label>
@@ -38,7 +37,6 @@
           </div>
         </div>
 
-        <!-- Поля для Доставки Ozon -->
         <div id="deliveryFields" style="display: none;">
           <div class="form-group">
             <label for="tgInput">Юзернейм в Telegram</label>
@@ -56,9 +54,22 @@
               <input type="text" id="pvzAddressInput" class="form-control" placeholder="Начните вводить город и улицу..." oninput="suggestPvz()" autocomplete="off" />
               <button type="button" onclick="calculateDelivery()" style="padding: 0 15px; background: #ff4d85; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">СЧИТАТЬ</button>
             </div>
-            
-            <!-- ВЫПАДАЮЩИЙ СПИСОК -->
             <ul id="autocompleteList" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ff4d85; border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 1000; padding: 0; margin: 5px 0 0 0; list-style: none; box-shadow: 0 4px 12px rgba(0,0,0,0.1);"></ul>
+          </div>
+
+          <!-- БЛОК СТРАХОВКИ -->
+          <div class="form-group" style="padding-top: 15px;">
+            <label style="display:flex; align-items:center; gap: 8px; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="insuranceToggle" onchange="toggleInsurance()">
+              Застраховать отправление
+            </label>
+            <input type="number" id="insuranceAmount" class="form-control" style="display:none; margin-top: 8px;" placeholder="На какую сумму? (например: 5000)" min="1" step="1" />
+          </div>
+
+          <!-- ТОТ САМЫЙ БЛОК ВЫВОДА РЕЗУЛЬТАТОВ, ИЗ-ЗА ОТСУТСТВИЯ КОТОРОГО ВСЕ ЛОМАЛОСЬ -->
+          <div id="deliveryInfoBox" style="display: none; margin-top: 15px; padding: 12px; background: #fff5f8; border: 1px solid #ff4d85; border-radius: 8px; font-size: 13px;">
+            <div><b>Стоимость доставки:</b> <span id="deliveryCostDisplay">...</span></div>
+            <div style="margin-top: 8px; color: #555;"><b>Ваши позиции:</b> <span id="deliveryItemsDisplay">...</span></div>
           </div>
         </div>
 
