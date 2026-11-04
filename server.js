@@ -23,7 +23,7 @@ const REDIRECT_URL = "https://hellopinky.ru";
 
 // Конфигурация торговых точек для разных вкладок
 const RETAIL_POINTS = {
-    main: "8a838daf-cd51-474a-b444-854e8f8263b6", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
+    main: "ВСТАВЬ_СЮДА_ID_ТОЧКИ_ОСНОВНЫХ_ОПЛАТ", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
     preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
 };
 
@@ -128,7 +128,7 @@ async function loadPvzDatabase() {
 
         let allPoints = [];
         let cursor = "";
-        const limit = 100; // Лимит строго 100 для прохождения валидации
+        const limit = 100;
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -181,14 +181,7 @@ async function loadPvzDatabase() {
                                 }
                             }
                         }
-                    } else {
-                        const errTxt = await infoRes.text();
-                        console.log(`❌ Ошибка Ozon API /info: Статус ${infoRes.status}. Ответ: ${errTxt}`);
                     }
-                }
-
-                if (allPoints.length > 0 && allPoints.length % 500 < 100) {
-                    console.log(`📥 Загружено с настоящими адресами: ${allPoints.length} ПВЗ...`);
                 }
 
                 if (listData.next_cursor) { 
@@ -209,8 +202,6 @@ async function loadPvzDatabase() {
             cachedOzonPoints = allPoints;
             fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
             console.log(`✅ ИТОГ: База полностью загружена! Сохранено ПВЗ: ${cachedOzonPoints.length}`);
-        } else {
-            console.log(`❌ Ошибка: В итоге не скачано ни одного адреса. Проверьте логи.`);
         }
     } catch (e) {
         console.log(`❌ Критическая ошибка: ${e.message}`);
@@ -243,6 +234,11 @@ function parseTSV(text) {
 
 async function getOptimalPackaging(username) {
     try {
+        // Пуленепробиваемая проверка на пустое имя
+        if (!username || typeof username !== 'string') {
+            return { error: "Отсутствует юзернейм для поиска." };
+        }
+
         const [ordRes, prodRes, boxRes] = await Promise.all([ fetch(TSV_ORDERS), fetch(TSV_PRODUCTS), fetch(TSV_BOXES) ]);
         const orders = parseTSV(await ordRes.text());
         const products = parseTSV(await prodRes.text());
@@ -250,6 +246,7 @@ async function getOptimalPackaging(username) {
 
         const cleanUser = username.replace('@', '').trim().toLowerCase();
         const userOrders = orders.filter(o => (o['юзернейм'] || '').replace('@', '').trim().toLowerCase() === cleanUser);
+        
         if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены." };
 
         let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0;
@@ -298,13 +295,18 @@ async function getOptimalPackaging(username) {
 
         if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
         return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; 
-    } catch (e) { return { error: "Ошибка чтения таблиц Google." }; }
+    } catch (e) { return { error: "Внутренняя ошибка таблиц." }; }
 }
 
 // ==========================================
-// 5. СОЗДАНИЕ ЗАКАЗА В OZON (ПОСЛЕ ОПЛАТЫ)
+// 5. СОЗДАНИЕ ЗАКАЗА В OZON (ПОСЛЕ ОПЛАТЫ ИЛИ НАПРЯМУЮ)
 // ==========================================
 async function createOzonOrder(orderInfo) {
+    if (!orderInfo.tgUser) {
+        addLog(`❌ Ошибка: Ozon заказ отменен, так как tgUser пустой.`);
+        return;
+    }
+
     addLog(`📦 Начинаем создание заказа Ozon для ${orderInfo.tgUser}...`);
     const packData = await getOptimalPackaging(orderInfo.tgUser);
     if (packData.error) { addLog(`❌ Ошибка упаковки: ${packData.error}`); return; }
@@ -314,13 +316,11 @@ async function createOzonOrder(orderInfo) {
 
     const token = await getOzonToken();
     
-    // Страховка по умолчанию 100 руб, либо введенная пользователем
     let declaredValue = "100.00"; 
     if (orderInfo.needInsurance && parseFloat(orderInfo.insAmount) > 0) {
         declaredValue = parseFloat(orderInfo.insAmount).toFixed(2);
     }
 
-    // По документации: order_external_id, recipient, postings, delivery[cite: 50]
     const payload = {
         order_external_id: "hp-" + Date.now(), 
         recipient: { 
@@ -330,8 +330,8 @@ async function createOzonOrder(orderInfo) {
         postings: [{
             request_id: 1,
             shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
-            description: packData.itemsStr.substring(0, 250), //[cite: 83]
-            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, //[cite: 50]
+            description: packData.itemsStr.substring(0, 250), 
+            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, 
             dimensions: { 
                 weight_g: Math.ceil(packData.box.weight), 
                 length_mm: Math.ceil(packData.box.length * 10),
@@ -409,11 +409,6 @@ setInterval(async () => {
                     if (success) {
                         delete state.waiting[qid];
                         addLog(`✅ Оплата получена, чек для ${o.email} успешно отправлен!`);
-                        
-                        // Создаем отправление Ozon только после успешной оплаты
-                        if (o.paymentType === 'delivery') {
-                            createOzonOrder(o);
-                        }
                     }
                 }
             }
@@ -437,7 +432,6 @@ app.get('/api/pvz-suggest', (req, res) => {
     res.json({ points: results });
 });
 
-// Предварительный расчёт для клиента
 app.post('/api/delivery-calc', async (req, res) => {
     let { pvzId, targetAddress, tgUser, phone, needInsurance, insAmount } = req.body;
     if (!tgUser || (!pvzId && !targetAddress)) {
@@ -466,18 +460,18 @@ app.post('/api/delivery-calc', async (req, res) => {
     const token = await getOzonToken();
     if (!token) return res.status(500).json({ success: false, error: "Ошибка токена Ozon." });
 
-    let declaredValue = "100.00"; // Страховка по умолчанию[cite: 48]
+    let declaredValue = "100.00"; 
     if (needInsurance && parseFloat(insAmount) > 0) {
         declaredValue = parseFloat(insAmount).toFixed(2);
     }
 
     const url = "https://api-delivery.ozon.ru/v1/order/checkout";
     const payload = {
-        recipient: { phone_number: phone || "+79990000000" }, //[cite: 48]
+        recipient: { phone_number: phone || "+79990000000" }, 
         postings: [{
             request_id: 1,
             shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
-            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, //[cite: 48]
+            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, 
             dimensions: { 
                 weight_g: Math.ceil(packData.box.weight), 
                 length_mm: Math.ceil(packData.box.length * 10),
@@ -485,7 +479,7 @@ app.post('/api/delivery-calc', async (req, res) => {
                 height_mm: Math.ceil(packData.box.height * 10) 
             }
         }],
-        delivery: { delivery_point: { delivery_point_id: Number(pvzId) } } //[cite: 48]
+        delivery: { delivery_point: { delivery_point_id: Number(pvzId) } } 
     };
 
     try {
@@ -515,20 +509,31 @@ app.post('/api/delivery-calc', async (req, res) => {
     }
 });
 
-// Создание QR на оплату
 app.post('/api/pay', async (req, res) => {
-    // Принимаем все дополнительные поля для Ozon (придут с фронтенда)
     const { item, amount, email, paymentType, tgUser, phone, pvzAddress, needInsurance, insAmount } = req.body;
     
     if (!item || !amount || amount <= 0 || !email) {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
+    // === ОБХОД ОПЛАТЫ ДЛЯ ДОСТАВКИ ===
+    // Если клиент нажал на вкладку доставки, не генерируем QR, а сразу создаем заказ в Ozon
+    if (paymentType === 'delivery') {
+        addLog(`🚀 Тестовый режим: Оплата доставки пропущена. Формируем заказ для ${tgUser}`);
+        
+        // Запускаем асинхронно функцию создания заказа
+        createOzonOrder({ email, item, amount, paymentType, tgUser, phone, pvzAddress, needInsurance, insAmount });
+        
+        // Отдаем клиенту команду на успешное перенаправление (просто перезагрузим страницу)
+        return res.json({ success: true, link: REDIRECT_URL });
+    }
+    // ==================================
+
+    // Классическая оплата для Предзаказов и Основных оплат
     const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
     const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
     
     if (link && qrcId) {
-        // Сохраняем в память стейта для создания заказа после оплаты
         state.waiting[qrcId] = { 
             email, item, amount, paymentType, 
             tgUser, phone, pvzAddress, needInsurance, insAmount, 
@@ -537,11 +542,18 @@ app.post('/api/pay', async (req, res) => {
         addLog(`🌸 СБП QR (${paymentType || 'main'}) для ${email}`);
         return res.json({ success: true, link });
     }
-    res.status(500).json({ success: false, error: "Ошибка генерации QR." });
+    res.status(500).json({ success: false, error: "Ошибка генерации QR в Модульбанке. Проверьте логи сервера." });
 });
 
-app.get('/api/logs', (req, res) => res.json({ waiting: Object.keys(state.waiting).length, history: state.history }));
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+app.get('/api/logs', (req, res) => {
+    res.json({ waiting: Object.keys(state.waiting).length, history: state.history });
+});
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => { 
+    console.log(`🚀 Сервер запущен на порту ${PORT}`); 
+});
