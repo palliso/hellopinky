@@ -16,7 +16,6 @@ const CACHE_FILE = fs.existsSync(CACHE_DIR)
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
-// Загрузка кэша и авто-очистка, если он пустой или битый
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
@@ -94,7 +93,8 @@ async function loadPvzDatabase() {
 
         let allPoints = [];
         let cursor = "";
-        const limit = 250; 
+        // Ozon API /info строго требует не более 100 ID в запросе
+        const limit = 100; 
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -104,7 +104,6 @@ async function loadPvzDatabase() {
 
         while (hasMore && failCount < 5) {
             try {
-                // Шаг 1. Получаем список ID пунктов
                 const bodyPayload = { pagination: { limit: limit } };
                 if (cursor) bodyPayload.pagination.cursor = cursor;
 
@@ -122,7 +121,6 @@ async function loadPvzDatabase() {
                 const listData = await listRes.json();
                 if (!listData.delivery_points || listData.delivery_points.length === 0) break;
                 
-                // Извлекаем ID строго как числа, игнорируя пустышки
                 const chunkIds = [];
                 for (const dp of listData.delivery_points) {
                     const rawId = dp.delivery_point || dp.delivery_point_id || dp.id;
@@ -132,7 +130,6 @@ async function loadPvzDatabase() {
                     }
                 }
 
-                // Шаг 2. Запрашиваем адреса для полученных ID
                 if (chunkIds.length > 0) {
                     const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
                         method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunkIds })
@@ -142,7 +139,6 @@ async function loadPvzDatabase() {
                         const infoData = await infoRes.json();
                         if (infoData.delivery_points) {
                             for (const p of infoData.delivery_points) {
-                                // Убрано жесткое требование p.is_active, спасаем все адреса!
                                 const addrStr = p.full_address || p.name;
                                 if (addrStr) {
                                     allPoints.push({
@@ -156,11 +152,9 @@ async function loadPvzDatabase() {
                         const errTxt = await infoRes.text();
                         console.log(`❌ Ошибка Ozon API /info: Статус ${infoRes.status}. Ответ: ${errTxt}`);
                     }
-                } else {
-                    console.log(`⚠️ В этой пачке не найдено валидных числовых ID ПВЗ.`);
                 }
 
-                if (allPoints.length > 0 && allPoints.length % 1000 < 250) {
+                if (allPoints.length > 0 && allPoints.length % 500 < 100) {
                     console.log(`📥 Загружено с настоящими адресами: ${allPoints.length} ПВЗ...`);
                 }
 
@@ -171,7 +165,7 @@ async function loadPvzDatabase() {
                     hasMore = false; 
                 }
                 
-                await new Promise(r => setTimeout(r, 2000));
+                await new Promise(r => setTimeout(r, 1500));
             } catch (err) { 
                 failCount++; 
                 console.log(`⚠️ Сбой сети: ${err.message}. Пауза 5 сек...`);
