@@ -13,7 +13,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ==========================================
-// 1. НАСТРОЙКИ ОПЛАТЫ (Modulbank & CloudKassir)
+// 1. НАСТРОЙКИ ОПЛАТЫ И ИНТЕГРАЦИЙ
 // ==========================================
 const MODUL_TOKEN = "ZWU1MzQzZTctYmUzNi00YjlkLWI3MGMtNDEzYjM0YWYyNDA1OWMzZDlmMTgtOWNjNi00N2E1LTkwMzktNjI0NzIxODRhMGJi";
 const CP_ID = "pk_f36ba0fb530c9daf8fb7b97ec5dee";
@@ -23,10 +23,30 @@ const REDIRECT_URL = "https://hellopinky.ru";
 
 // Конфигурация торговых точек для разных вкладок
 const RETAIL_POINTS = {
-    main: "8a838daf-cd51-474a-b444-854e8f8263b6", 
+    main: "8a838daf-cd51-474a-b444-854e8f8263b6", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
     preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
 };
 
+// Ссылка на Google Таблицы (Web App)
+const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbzry07Mbx3R17eJh5qhbbiSjqx7Wl4Clcbuar2xsry9A3iRtaN4evvS5SJxXM0g9pAkvw/exec";
+
+// ==========================================
+// 2. НАСТРОЙКИ OZON API
+// ==========================================
+const OZON_CLIENT_ID = "f0f0d638-7c3b-4f17-a5a1-d44b63bc8b1e";
+const OZON_CLIENT_SECRET = "a5a1d29c05115394f19204c5dcfd507a86f227fe193feb903d07946bdc6e1579";
+const OZON_SHIPMENT_METHOD_ID = 1020005031049340;
+let ozonDdosCookie = "";
+
+const CACHE_DIR = '/data';
+const CACHE_FILE = fs.existsSync(CACHE_DIR) 
+    ? path.join(CACHE_DIR, 'pvz_cache.json') 
+    : path.join(__dirname, 'pvz_cache.json');
+
+let cachedOzonPoints = [];
+let isBaseLoading = false;
+
+// Состояние оплат и логирование
 let state = {
     waiting: {},
     history: []
@@ -39,105 +59,14 @@ function addLog(msg) {
     console.log(`[LOG] ${msg}`);
 }
 
-async function createDynamicQr(amount, description, retailPointId) {
-    const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
-    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
-    const payload = {
-        retailPointId: retailPointId,
-        sum: Number(amount),
-        extraInfo: description.substring(0, 140),
-        redirectUrl: REDIRECT_URL
-    };
-
-    try {
-        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
-        if (res.ok) {
-            const data = await res.json();
-            return { link: data.payload, qrcId: data.qrcId };
-        } else {
-            const errText = await res.text();
-            addLog(`❌ Ошибка создания QR от Модульбанка (${res.status}): ${errText}`);
-        }
-    } catch (e) {
-        addLog(`❌ Сетевая ошибка при создании QR: ${e.message}`);
-    }
-    return { link: null, qrcId: null };
-}
-
-async function sendReceipt(amount, email, itemName) {
-    const auth = Buffer.from(`${CP_ID}:${CP_SECRET}`).toString('base64');
-    const payload = {
-        Inn: MY_INN,
-        Type: "Income",
-        CustomerReceipt: {
-            Items: [{ label: itemName, price: Number(amount), quantity: 1, amount: Number(amount), vat: null, method: 1, object: 1 }],
-            taxationSystem: 1,
-            email: email
-        }
-    };
-
-    try {
-        const res = await fetch("https://api.cloudpayments.ru/kkt/receipt", {
-            method: "POST",
-            headers: { "Authorization": `Basic ${auth}`, "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-            return true;
-        } else {
-            const errReceipt = await res.text();
-            addLog(`❌ Ошибка пробития чека CloudKassir (${res.status}): ${errReceipt}`);
-            return false;
-        }
-    } catch (e) {
-        addLog(`❌ Исключение при отправке чека: ${e.message}`);
-        return false;
-    }
-}
-
-// Фоновый робот проверки статуса СБП
-setInterval(async () => {
-    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}` };
-    const now = Date.now();
-
-    for (const [qid, o] of Object.entries(state.waiting)) {
-        if (now - o.created_at > 86400000) {
-            delete state.waiting[qid];
-            continue;
-        }
-        try {
-            const res = await fetch(`https://api.modulbank.ru/v1/sbp/qr-codes/${qid}`, { method: "GET", headers });
-            if (res.ok) {
-                const data = await res.json();
-                if (data.status === "Accepted") {
-                    const success = await sendReceipt(data.amount || o.amount, o.email, o.item);
-                    if (success) {
-                        delete state.waiting[qid];
-                        addLog(`✅ Оплата получена, чек для ${o.email} (${o.amount} ₽) успешно отправлен!`);
-                    }
-                }
-            }
-        } catch (e) {}
-    }
-}, 10000);
-
-
 // ==========================================
-// 2. НАСТРОЙКИ ЛОГИСТИКИ (Ozon API)
+// 3. БАЗОВЫЕ ФУНКЦИИ И СКАЧИВАНИЕ ПВЗ
 // ==========================================
-const CACHE_DIR = '/data';
-const CACHE_FILE = fs.existsSync(CACHE_DIR) 
-    ? path.join(CACHE_DIR, 'pvz_cache.json') 
-    : path.join(__dirname, 'pvz_cache.json');
-
-let cachedOzonPoints = [];
-let isBaseLoading = false;
-
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
         if (cachedOzonPoints.length === 0 || (cachedOzonPoints[0] && cachedOzonPoints[0].address === "Адрес уточняется")) {
-            console.log(`🗑️ Найден битый или пустой кэш. Удаляем и начинаем с чистого листа...`);
+            console.log(`🗑️ Найден битый или пустой кэш. Удаляем и перекачиваем...`);
             cachedOzonPoints = [];
             fs.unlinkSync(CACHE_FILE);
         } else {
@@ -147,15 +76,6 @@ if (fs.existsSync(CACHE_FILE)) {
         console.log(`⚠️ Ошибка чтения файла кэша.`);
     }
 }
-
-const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
-const TSV_PRODUCTS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=538172532&single=true&output=tsv";
-const TSV_BOXES = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=1518762544&single=true&output=tsv";
-
-const OZON_CLIENT_ID = "f0f0d638-7c3b-4f17-a5a1-d44b63bc8b1e";
-const OZON_CLIENT_SECRET = "a5a1d29c05115394f19204c5dcfd507a86f227fe193feb903d07946bdc6e1579";
-const OZON_SHIPMENT_METHOD_ID = 1020005031049340;
-let ozonDdosCookie = "";
 
 async function fetchOzon(url, options = {}) {
     options.redirect = 'manual'; 
@@ -201,14 +121,14 @@ async function loadPvzDatabase() {
     try {
         const token = await getOzonToken();
         if (!token) { 
-            console.log("❌ Ошибка: не удалось получить токен авторизации.");
+            console.log("❌ Ошибка: не удалось получить токен Ozon.");
             isBaseLoading = false; 
             return; 
         }
 
         let allPoints = [];
         let cursor = "";
-        const limit = 100; // Ozon допускает строго не более 100 элементов за раз в методе /info
+        const limit = 100; // Лимит строго 100 для прохождения валидации
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -227,7 +147,6 @@ async function loadPvzDatabase() {
                 
                 if (!listRes.ok) {
                     failCount++;
-                    console.log(`⚠️ Метод /list ответил ${listRes.status}. Пауза 5 сек...`);
                     await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
@@ -282,7 +201,6 @@ async function loadPvzDatabase() {
                 await new Promise(r => setTimeout(r, 1500));
             } catch (err) { 
                 failCount++; 
-                console.log(`⚠️ Сбой сети: ${err.message}. Пауза 5 сек...`);
                 await new Promise(r => setTimeout(r, 5000)); 
             }
         }
@@ -305,8 +223,11 @@ async function loadPvzDatabase() {
 setTimeout(() => { loadPvzDatabase(); }, 2000);
 
 // ==========================================
-// 3. ПАРСЕР ТАБЛИЦ И РАСЧЕТ УПАКОВКИ
+// 4. ПАРСЕР ТАБЛИЦ И РАСЧЕТ УПАКОВКИ
 // ==========================================
+const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
+const TSV_PRODUCTS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=538172532&single=true&output=tsv";
+const TSV_BOXES = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=1518762544&single=true&output=tsv";
 
 function parseTSV(text) {
     const lines = text.replace(/\r/g, '').trim().split('\n');
@@ -381,9 +302,128 @@ async function getOptimalPackaging(username) {
 }
 
 // ==========================================
-// 4. API МАРШРУТЫ И ENDPOINTS
+// 5. СОЗДАНИЕ ЗАКАЗА В OZON (ПОСЛЕ ОПЛАТЫ)
 // ==========================================
+async function createOzonOrder(orderInfo) {
+    addLog(`📦 Начинаем создание заказа Ozon для ${orderInfo.tgUser}...`);
+    const packData = await getOptimalPackaging(orderInfo.tgUser);
+    if (packData.error) { addLog(`❌ Ошибка упаковки: ${packData.error}`); return; }
 
+    const foundPvz = cachedOzonPoints.find(p => p.address === orderInfo.pvzAddress);
+    if (!foundPvz) { addLog(`❌ ПВЗ не найден в кэше.`); return; }
+
+    const token = await getOzonToken();
+    
+    // Страховка по умолчанию 100 руб, либо введенная пользователем
+    let declaredValue = "100.00"; 
+    if (orderInfo.needInsurance && parseFloat(orderInfo.insAmount) > 0) {
+        declaredValue = parseFloat(orderInfo.insAmount).toFixed(2);
+    }
+
+    // По документации: order_external_id, recipient, postings, delivery[cite: 50]
+    const payload = {
+        order_external_id: "hp-" + Date.now(), 
+        recipient: { 
+            phone_number: orderInfo.phone, 
+            full_name: orderInfo.tgUser 
+        }, 
+        postings: [{
+            request_id: 1,
+            shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
+            description: packData.itemsStr.substring(0, 250), //[cite: 83]
+            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, //[cite: 50]
+            dimensions: { 
+                weight_g: Math.ceil(packData.box.weight), 
+                length_mm: Math.ceil(packData.box.length * 10),
+                width_mm: Math.ceil(packData.box.width * 10), 
+                height_mm: Math.ceil(packData.box.height * 10) 
+            }
+        }],
+        delivery: { delivery_point: { delivery_point_id: Number(foundPvz.id) } } 
+    };
+
+    try {
+        const res = await fetchOzon("https://api-delivery.ozon.ru/v1/order/create", { 
+            method: "POST", headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        
+        const data = await res.json();
+        if (data.postings && data.postings[0]) {
+            const postingNum = data.postings[0].posting_number;
+            addLog(`✅ Ozon заказ создан! Трек: ${postingNum}`);
+            
+            // Запись в Google Таблицу через Web App
+            await fetch(GOOGLE_SHEET_URL, {
+                method: 'POST',
+                body: JSON.stringify({
+                    postingNumber: postingNum,
+                    tgUser: orderInfo.tgUser,
+                    items: packData.itemsStr,
+                    box: `${packData.box.length}x${packData.box.width}x${packData.box.height}`
+                })
+            }).catch(e => addLog("⚠️ Ошибка отправки в гугл таблицу"));
+        } else {
+            addLog(`❌ Ошибка Ozon: ${JSON.stringify(data)}`);
+        }
+    } catch (e) {
+        addLog(`❌ Ошибка сети при создании Ozon заказа: ${e.message}`);
+    }
+}
+
+// ==========================================
+// 6. ОПЛАТА И СТАТУСЫ (МОДУЛЬБАНК & CLOUDKASSIR)
+// ==========================================
+async function createDynamicQr(amount, description, retailPointId) {
+    const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
+    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
+    const payload = { retailPointId: retailPointId, sum: Number(amount), extraInfo: description.substring(0, 140), redirectUrl: REDIRECT_URL };
+    try {
+        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+        if (res.ok) { const data = await res.json(); return { link: data.payload, qrcId: data.qrcId }; }
+    } catch (e) { }
+    return { link: null, qrcId: null };
+}
+
+async function sendReceipt(amount, email, itemName) {
+    const auth = Buffer.from(`${CP_ID}:${CP_SECRET}`).toString('base64');
+    const payload = { Inn: MY_INN, Type: "Income", CustomerReceipt: { Items: [{ label: itemName, price: Number(amount), quantity: 1, amount: Number(amount), vat: null, method: 1, object: 1 }], taxationSystem: 1, email: email } };
+    try {
+        const res = await fetch("https://api.cloudpayments.ru/kkt/receipt", { method: "POST", headers: { "Authorization": `Basic ${auth}`, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        return res.ok;
+    } catch (e) { return false; }
+}
+
+setInterval(async () => {
+    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}` };
+    const now = Date.now();
+
+    for (const [qid, o] of Object.entries(state.waiting)) {
+        if (now - o.created_at > 86400000) { delete state.waiting[qid]; continue; }
+        try {
+            const res = await fetch(`https://api.modulbank.ru/v1/sbp/qr-codes/${qid}`, { method: "GET", headers });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.status === "Accepted") {
+                    const success = await sendReceipt(data.amount || o.amount, o.email, o.item);
+                    if (success) {
+                        delete state.waiting[qid];
+                        addLog(`✅ Оплата получена, чек для ${o.email} успешно отправлен!`);
+                        
+                        // Создаем отправление Ozon только после успешной оплаты
+                        if (o.paymentType === 'delivery') {
+                            createOzonOrder(o);
+                        }
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+}, 10000);
+
+// ==========================================
+// 7. API МАРШРУТЫ И ENDPOINTS
+// ==========================================
 app.get('/api/pvz-suggest', (req, res) => {
     const q = (req.query.q || '').toLowerCase().trim();
     if (q.length < 3 || cachedOzonPoints.length === 0) return res.json({ points: [] });
@@ -397,6 +437,7 @@ app.get('/api/pvz-suggest', (req, res) => {
     res.json({ points: results });
 });
 
+// Предварительный расчёт для клиента
 app.post('/api/delivery-calc', async (req, res) => {
     let { pvzId, targetAddress, tgUser, phone, needInsurance, insAmount } = req.body;
     if (!tgUser || (!pvzId && !targetAddress)) {
@@ -425,18 +466,18 @@ app.post('/api/delivery-calc', async (req, res) => {
     const token = await getOzonToken();
     if (!token) return res.status(500).json({ success: false, error: "Ошибка токена Ozon." });
 
-    let declaredValue = "100.00"; 
+    let declaredValue = "100.00"; // Страховка по умолчанию[cite: 48]
     if (needInsurance && parseFloat(insAmount) > 0) {
         declaredValue = parseFloat(insAmount).toFixed(2);
     }
 
     const url = "https://api-delivery.ozon.ru/v1/order/checkout";
     const payload = {
-        recipient: { phone_number: phone || "+79990000000" },
+        recipient: { phone_number: phone || "+79990000000" }, //[cite: 48]
         postings: [{
             request_id: 1,
             shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
-            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, 
+            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, //[cite: 48]
             dimensions: { 
                 weight_g: Math.ceil(packData.box.weight), 
                 length_mm: Math.ceil(packData.box.length * 10),
@@ -444,7 +485,7 @@ app.post('/api/delivery-calc', async (req, res) => {
                 height_mm: Math.ceil(packData.box.height * 10) 
             }
         }],
-        delivery: { delivery_point: { delivery_point_id: Number(pvzId) } }
+        delivery: { delivery_point: { delivery_point_id: Number(pvzId) } } //[cite: 48]
     };
 
     try {
@@ -474,38 +515,33 @@ app.post('/api/delivery-calc', async (req, res) => {
     }
 });
 
+// Создание QR на оплату
 app.post('/api/pay', async (req, res) => {
-    // Получаем paymentType, чтобы определить кассу (ТВОЙ РОДНОЙ КОД)
-    const { item, amount, email, paymentType } = req.body;
+    // Принимаем все дополнительные поля для Ozon (придут с фронтенда)
+    const { item, amount, email, paymentType, tgUser, phone, pvzAddress, needInsurance, insAmount } = req.body;
     
     if (!item || !amount || amount <= 0 || !email) {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    // Если paymentType = delivery, fallback уйдет на RETAIL_POINTS.main
     const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
-
     const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
     
     if (link && qrcId) {
-        state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
-        addLog(`🌸 Создан СБП QR (${paymentType || 'main'}) для ${email} на сумму ${amount} ₽ (${item})`);
+        // Сохраняем в память стейта для создания заказа после оплаты
+        state.waiting[qrcId] = { 
+            email, item, amount, paymentType, 
+            tgUser, phone, pvzAddress, needInsurance, insAmount, 
+            created_at: Date.now() 
+        };
+        addLog(`🌸 СБП QR (${paymentType || 'main'}) для ${email}`);
         return res.json({ success: true, link });
     }
-
-    res.status(500).json({ success: false, error: "Ошибка генерации QR в Модульбанке. Проверьте логи сервера." });
+    res.status(500).json({ success: false, error: "Ошибка генерации QR." });
 });
 
-app.get('/api/logs', (req, res) => {
-    res.json({ waiting: Object.keys(state.waiting).length, history: state.history });
-});
-
-// Гарантированный возврат главной страницы
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.get('/api/logs', (req, res) => res.json({ waiting: Object.keys(state.waiting).length, history: state.history }));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => { 
-    console.log(`🚀 Сервер запущен на порту ${PORT}`); 
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
