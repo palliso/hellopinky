@@ -19,7 +19,15 @@ let isBaseLoading = false;
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        console.log(`✅ Кэш ПВЗ загружен. Точек: ${cachedOzonPoints.length}`);
+        
+        // Автоматическое удаление битого кэша без адресов
+        if (cachedOzonPoints.length > 0 && cachedOzonPoints[0].address === "Адрес уточняется") {
+            console.log(`🗑️ Найден битый кэш (без текстовых адресов). Удаляем и перекачиваем...`);
+            cachedOzonPoints = [];
+            fs.unlinkSync(CACHE_FILE);
+        } else {
+            console.log(`✅ Кэш ПВЗ загружен. Точек: ${cachedOzonPoints.length}`);
+        }
     } catch (e) {}
 }
 
@@ -80,14 +88,17 @@ async function loadPvzDatabase() {
 
         let allPoints = [];
         let cursor = "";
-        const limit = 250;
+        const limit = 250; 
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
         let failCount = 0;
 
+        console.log("⏳ Начинаем выгрузку ПВЗ и расшифровку адресов...");
+
         while (hasMore && failCount < 5) {
             try {
+                // 1. Получаем ID пунктов
                 const bodyPayload = { pagination: { limit: limit } };
                 if (cursor) bodyPayload.pagination.cursor = cursor;
 
@@ -104,22 +115,51 @@ async function loadPvzDatabase() {
                 const listData = await listRes.json();
                 if (!listData.delivery_points || listData.delivery_points.length === 0) break;
                 
-                for (const p of listData.delivery_points) {
-                    const pointId = p.delivery_point_id || p.id;
-                    const pointAddr = p.full_address || p.address;
-                    if (pointId) allPoints.push({ id: pointId, address: pointAddr || "Адрес уточняется" });
+                const chunkIds = listData.delivery_points
+                    .map(p => p.delivery_point_id || p.id)
+                    .filter(id => id);
+
+                // 2. Отправляем ID во второй метод Ozon для получения самих адресов
+                if (chunkIds.length > 0) {
+                    const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
+                        method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunkIds })
+                    });
+
+                    if (infoRes.ok) {
+                        const infoData = await infoRes.json();
+                        if (infoData.delivery_points) {
+                            for (const p of infoData.delivery_points) {
+                                // Берем только рабочие пункты и сохраняем текст адреса
+                                if (p.is_active && p.full_address) {
+                                    allPoints.push({
+                                        id: p.delivery_point_id || p.id,
+                                        address: p.full_address
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
 
-                if (listData.next_cursor) { cursor = listData.next_cursor; failCount = 0; } 
-                else { hasMore = false; }
-                await new Promise(r => setTimeout(r, 2000));
+                if (allPoints.length % 1000 < 250) {
+                    console.log(`📥 Загружено с настоящими адресами: ${allPoints.length} ПВЗ...`);
+                }
 
+                if (listData.next_cursor) { 
+                    cursor = listData.next_cursor; 
+                    failCount = 0; 
+                } else { 
+                    hasMore = false; 
+                }
+                
+                await new Promise(r => setTimeout(r, 2000));
             } catch (err) { failCount++; await new Promise(r => setTimeout(r, 5000)); }
         }
 
         if (allPoints.length > 0) {
             cachedOzonPoints = allPoints;
             fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
+            console.log(`✅ ИТОГ: База полностью загружена! Всего рабочих ПВЗ: ${cachedOzonPoints.length}`);
         }
     } catch (e) {} finally { isBaseLoading = false; }
 }
@@ -150,13 +190,13 @@ async function getOptimalPackaging(username) {
         if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены." };
 
         let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0;
-        let itemNames = []; // <--- ЗДЕСЬ СОБИРАЕМ СПИСОК ТОВАРОВ
+        let itemNames = []; 
 
         userOrders.forEach(o => {
             const orderItemName = (o['товар (точное название)'] || o['товар'] || '').trim().toLowerCase();
             const qty = parseInt(o['кол-во'] || '1') || 1;
             
-            if (orderItemName) itemNames.push(`${orderItemName} (${qty} шт.)`); // Записываем позицию
+            if (orderItemName) itemNames.push(`${orderItemName} (${qty} шт.)`); 
 
             const prod = products.find(p => (p['товар'] || '').trim().toLowerCase() === orderItemName);
             if (prod) {
@@ -194,7 +234,7 @@ async function getOptimalPackaging(username) {
         });
 
         if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
-        return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; // Передаем товары
+        return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; 
     } catch (e) { return { error: "Ошибка чтения таблиц Google." }; }
 }
 
@@ -239,8 +279,7 @@ app.post('/api/delivery-calc', async (req, res) => {
     const token = await getOzonToken();
     if (!token) return res.status(500).json({ success: false, error: "Ошибка токена Ozon." });
 
-    // Обработка страховки: если пользователь ее включил и ввел сумму, ставим ее
-    let declaredValue = "100.00"; // Минимальная базовая оценка
+    let declaredValue = "100.00"; 
     if (needInsurance && parseFloat(insAmount) > 0) {
         declaredValue = parseFloat(insAmount).toFixed(2);
     }
@@ -251,7 +290,7 @@ app.post('/api/delivery-calc', async (req, res) => {
         postings: [{
             request_id: 1,
             shipment_method_id: Number(OZON_SHIPMENT_METHOD_ID),
-            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, // Передача оценки стоимости в Ozon
+            declared_value: { amount: String(declaredValue), currency_code: "RUB" }, 
             dimensions: { 
                 weight_g: Math.ceil(packData.box.weight), 
                 length_mm: Math.ceil(packData.box.length * 10),
@@ -271,16 +310,15 @@ app.post('/api/delivery-calc', async (req, res) => {
         if (resCheck.ok) {
             const data = await resCheck.json();
             const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
-            const ozonInsurance = parseFloat(data.results[0]?.posting?.estimated_insurance_cost?.amount) || 0; // Получение расчета страховки из Ozon
+            const ozonInsurance = parseFloat(data.results[0]?.posting?.estimated_insurance_cost?.amount) || 0; 
             
-            // Включаем страховку от Ozon в итоговую сумму
             const finalPrice = Math.ceil((ozonTariff + ozonInsurance + packData.box.materialCost + 20) / 0.92);
             
             res.json({ 
                 success: true, 
                 deliveryPrice: finalPrice, 
                 foundAddress: finalAddressString, 
-                itemsStr: packData.itemsStr // Возвращаем найденные позиции на клиент
+                itemsStr: packData.itemsStr 
             });
         } else {
             res.status(500).json({ success: false, error: `ПВЗ недоступен для расчета.` });
