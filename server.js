@@ -16,18 +16,21 @@ const CACHE_FILE = fs.existsSync(CACHE_DIR)
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
+// Загрузка кэша и авто-очистка, если он пустой или битый
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
         
-        if (cachedOzonPoints.length > 0 && cachedOzonPoints[0].address === "Адрес уточняется") {
-            console.log(`🗑️ Найден битый кэш (без текстовых адресов). Удаляем и перекачиваем...`);
+        if (cachedOzonPoints.length === 0 || (cachedOzonPoints[0] && cachedOzonPoints[0].address === "Адрес уточняется")) {
+            console.log(`🗑️ Найден битый или пустой кэш. Удаляем и начинаем с чистого листа...`);
             cachedOzonPoints = [];
             fs.unlinkSync(CACHE_FILE);
         } else {
-            console.log(`✅ Кэш ПВЗ загружен. Точек: ${cachedOzonPoints.length}`);
+            console.log(`✅ Кэш ПВЗ успешно загружен. Точек: ${cachedOzonPoints.length}`);
         }
-    } catch (e) {}
+    } catch (e) {
+        console.log(`⚠️ Ошибка чтения файла кэша.`);
+    }
 }
 
 const TSV_ORDERS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98icYJEUamI8Lo5qr8jBAE27oOxaBKRaeBL7NUgagCe6MMlQy667OaxbJh3r1feLsZGMT/pub?gid=0&single=true&output=tsv";
@@ -83,7 +86,11 @@ async function loadPvzDatabase() {
     isBaseLoading = true;
     try {
         const token = await getOzonToken();
-        if (!token) { isBaseLoading = false; return; }
+        if (!token) { 
+            console.log("❌ Ошибка: не удалось получить токен авторизации.");
+            isBaseLoading = false; 
+            return; 
+        }
 
         let allPoints = [];
         let cursor = "";
@@ -97,7 +104,7 @@ async function loadPvzDatabase() {
 
         while (hasMore && failCount < 5) {
             try {
-                // 1. Получаем список ID пунктов
+                // Шаг 1. Получаем список ID пунктов
                 const bodyPayload = { pagination: { limit: limit } };
                 if (cursor) bodyPayload.pagination.cursor = cursor;
 
@@ -107,6 +114,7 @@ async function loadPvzDatabase() {
                 
                 if (!listRes.ok) {
                     failCount++;
+                    console.log(`⚠️ Метод /list ответил ${listRes.status}. Пауза 5 сек...`);
                     await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
@@ -114,12 +122,17 @@ async function loadPvzDatabase() {
                 const listData = await listRes.json();
                 if (!listData.delivery_points || listData.delivery_points.length === 0) break;
                 
-                // Правильно извлекаем ID из поля delivery_point согласно документации Ozon
-                const chunkIds = listData.delivery_points
-                    .map(p => Number(p.delivery_point || p.delivery_point_id || p.id))
-                    .filter(id => id && !isNaN(id));
+                // Извлекаем ID строго как числа, игнорируя пустышки
+                const chunkIds = [];
+                for (const dp of listData.delivery_points) {
+                    const rawId = dp.delivery_point || dp.delivery_point_id || dp.id;
+                    const numId = Number(rawId);
+                    if (!isNaN(numId)) {
+                        chunkIds.push(numId);
+                    }
+                }
 
-                // 2. Запрашиваем адреса для полученных ID
+                // Шаг 2. Запрашиваем адреса для полученных ID
                 if (chunkIds.length > 0) {
                     const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
                         method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunkIds })
@@ -129,15 +142,22 @@ async function loadPvzDatabase() {
                         const infoData = await infoRes.json();
                         if (infoData.delivery_points) {
                             for (const p of infoData.delivery_points) {
-                                if (p.is_active && p.full_address) {
+                                // Убрано жесткое требование p.is_active, спасаем все адреса!
+                                const addrStr = p.full_address || p.name;
+                                if (addrStr) {
                                     allPoints.push({
                                         id: p.delivery_point_id || p.id,
-                                        address: p.full_address
+                                        address: addrStr
                                     });
                                 }
                             }
                         }
+                    } else {
+                        const errTxt = await infoRes.text();
+                        console.log(`❌ Ошибка Ozon API /info: Статус ${infoRes.status}. Ответ: ${errTxt}`);
                     }
+                } else {
+                    console.log(`⚠️ В этой пачке не найдено валидных числовых ID ПВЗ.`);
                 }
 
                 if (allPoints.length > 0 && allPoints.length % 1000 < 250) {
@@ -152,15 +172,25 @@ async function loadPvzDatabase() {
                 }
                 
                 await new Promise(r => setTimeout(r, 2000));
-            } catch (err) { failCount++; await new Promise(r => setTimeout(r, 5000)); }
+            } catch (err) { 
+                failCount++; 
+                console.log(`⚠️ Сбой сети: ${err.message}. Пауза 5 сек...`);
+                await new Promise(r => setTimeout(r, 5000)); 
+            }
         }
 
         if (allPoints.length > 0) {
             cachedOzonPoints = allPoints;
             fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
-            console.log(`✅ ИТОГ: База полностью загружена! Всего рабочих ПВЗ: ${cachedOzonPoints.length}`);
+            console.log(`✅ ИТОГ: База полностью загружена! Сохранено ПВЗ: ${cachedOzonPoints.length}`);
+        } else {
+            console.log(`❌ Ошибка: В итоге не скачано ни одного адреса. Проверьте логи.`);
         }
-    } catch (e) {} finally { isBaseLoading = false; }
+    } catch (e) {
+        console.log(`❌ Критическая ошибка: ${e.message}`);
+    } finally { 
+        isBaseLoading = false; 
+    }
 }
 
 setTimeout(() => { loadPvzDatabase(); }, 2000);
