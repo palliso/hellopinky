@@ -193,7 +193,8 @@ async function handlePayment(e) {
         showToast('Пожалуйста, укажите номер телефона.');
         return;
     }
-    finalItem = `Доставка Ozon (${tg}, тел: ${phone}, ПВЗ: ${confirmedPvzAddress})`;
+    // Назначение платежа
+    finalItem = "доставка озон";
     finalAmount = currentDeliveryCost;
   } else {
     let typeName = currentPaymentType === 'preorder' ? 'Предзаказ' : 'Оплата';
