@@ -20,7 +20,6 @@ if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
         
-        // Автоматическое удаление битого кэша без адресов
         if (cachedOzonPoints.length > 0 && cachedOzonPoints[0].address === "Адрес уточняется") {
             console.log(`🗑️ Найден битый кэш (без текстовых адресов). Удаляем и перекачиваем...`);
             cachedOzonPoints = [];
@@ -98,7 +97,7 @@ async function loadPvzDatabase() {
 
         while (hasMore && failCount < 5) {
             try {
-                // 1. Получаем ID пунктов
+                // 1. Получаем список ID пунктов
                 const bodyPayload = { pagination: { limit: limit } };
                 if (cursor) bodyPayload.pagination.cursor = cursor;
 
@@ -115,11 +114,12 @@ async function loadPvzDatabase() {
                 const listData = await listRes.json();
                 if (!listData.delivery_points || listData.delivery_points.length === 0) break;
                 
+                // Правильно извлекаем ID из поля delivery_point согласно документации Ozon
                 const chunkIds = listData.delivery_points
-                    .map(p => p.delivery_point_id || p.id)
-                    .filter(id => id);
+                    .map(p => Number(p.delivery_point || p.delivery_point_id || p.id))
+                    .filter(id => id && !isNaN(id));
 
-                // 2. Отправляем ID во второй метод Ozon для получения самих адресов
+                // 2. Запрашиваем адреса для полученных ID
                 if (chunkIds.length > 0) {
                     const infoRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/info", {
                         method: "POST", headers, body: JSON.stringify({ delivery_point_ids: chunkIds })
@@ -129,7 +129,6 @@ async function loadPvzDatabase() {
                         const infoData = await infoRes.json();
                         if (infoData.delivery_points) {
                             for (const p of infoData.delivery_points) {
-                                // Берем только рабочие пункты и сохраняем текст адреса
                                 if (p.is_active && p.full_address) {
                                     allPoints.push({
                                         id: p.delivery_point_id || p.id,
@@ -141,7 +140,7 @@ async function loadPvzDatabase() {
                     }
                 }
 
-                if (allPoints.length % 1000 < 250) {
+                if (allPoints.length > 0 && allPoints.length % 1000 < 250) {
                     console.log(`📥 Загружено с настоящими адресами: ${allPoints.length} ПВЗ...`);
                 }
 
