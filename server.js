@@ -8,7 +8,12 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const CACHE_FILE = path.join(__dirname, 'pvz_cache.json');
+// Умный выбор пути для кэша: на облачных хостингах используем постоянный том /data/
+const CACHE_DIR = '/data';
+const CACHE_FILE = fs.existsSync(CACHE_DIR) 
+    ? path.join(CACHE_DIR, 'pvz_cache.json') 
+    : path.join(__dirname, 'pvz_cache.json');
+
 let cachedOzonPoints = [];
 let isBaseLoading = false;
 
@@ -16,9 +21,9 @@ let isBaseLoading = false;
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        console.log(`✅ Кэш ПВЗ загружен. Точек в базе: ${cachedOzonPoints.length}`);
+        console.log(`✅ Кэш ПВЗ загружен из ${CACHE_FILE}. Точек в базе: ${cachedOzonPoints.length}`);
     } catch (e) {
-        console.log(`⚠️ Ошибка чтения кэша, будет сформирован новый.`);
+        console.log(`⚠️ Ошибка чтения кэша, будет скачан заново.`);
     }
 }
 
@@ -70,18 +75,18 @@ async function getOzonToken() {
     }
 }
 
-// Фоновая загрузка по официальному курсору Ozon[cite: 53]
+// Строгое скачивание по официальной документации (pagination: { limit, cursor })
 async function loadPvzDatabase() {
     if (isBaseLoading) return;
     
-    // Если база уже собрана (больше 1000 точек), не дергаем API лишний раз
-    if (cachedOzonPoints.length > 1000) {
-        console.log(`✨ База актуальна (${cachedOzonPoints.length} точек). Пропускаем скачивание.`);
+    // Если база уже в памяти — не нагружаем Ozon
+    if (cachedOzonPoints.length > 5000) {
+        console.log(`✨ База уже актуальна (${cachedOzonPoints.length} точек).`);
         return;
     }
 
     isBaseLoading = true;
-    console.log(`⏳ Старт фоновой выгрузки ПВЗ через Ozon Delivery API...`);
+    console.log(`⏳ Старт выгрузки ПВЗ. Сохраняем в: ${CACHE_FILE}`);
     
     try {
         const token = await getOzonToken();
@@ -90,10 +95,9 @@ async function loadPvzDatabase() {
             return;
         }
 
-        let allPoints = [...cachedOzonPoints];
-        let allIds = new Set(allPoints.map(p => p.id));
-        let cursor = null;
-        const limit = 100;
+        let allPoints = [];
+        let cursor = "";
+        const limit = 250; // Порции по 250 штук, как ты просил
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
         let hasMore = true;
@@ -101,12 +105,11 @@ async function loadPvzDatabase() {
 
         while (hasMore && failCount < 5) {
             try {
-                const bodyPayload = {
-                    pagination: {
-                        limit: limit,
-                        ...(cursor ? { cursor: cursor } : {})
-                    }
-                };
+                // Точное соответствие формату из спецификации
+                const bodyPayload = { pagination: { limit: limit } };
+                if (cursor) {
+                    bodyPayload.pagination.cursor = cursor;
+                }
 
                 const listRes = await fetchOzon("https://api-delivery.ozon.ru/v1/delivery-point/list", {
                     method: "POST", headers, body: JSON.stringify(bodyPayload)
@@ -114,7 +117,8 @@ async function loadPvzDatabase() {
                 
                 if (!listRes.ok) {
                     failCount++;
-                    await new Promise(r => setTimeout(r, 3000));
+                    console.log(`⚠️ Ozon ответил ${listRes.status}. Пауза 5 сек...`);
+                    await new Promise(r => setTimeout(r, 5000));
                     continue;
                 }
 
@@ -124,25 +128,18 @@ async function loadPvzDatabase() {
                     break;
                 }
                 
-                let addedCount = 0;
                 for (const p of listData.delivery_points) {
                     const pointId = p.delivery_point_id || p.id;
                     const pointAddr = p.full_address || p.address;
-                    
-                    if (pointId && !allIds.has(pointId)) {
-                        allIds.add(pointId);
+                    if (pointId) {
                         allPoints.push({
                             id: pointId,
                             address: pointAddr || "Адрес уточняется"
                         });
-                        addedCount++;
                     }
                 }
 
-                fs.writeFileSync(CACHE_FILE, JSON.stringify(allPoints));
-                if (addedCount > 0) {
-                    console.log(`💾 Добавлено новых: ${addedCount}. 📊 Всего адресов в базе: ${allPoints.length}`);
-                }
+                console.log(`📥 Скачано: ${allPoints.length} ПВЗ...`);
 
                 if (listData.next_cursor) {
                     cursor = listData.next_cursor;
@@ -151,24 +148,30 @@ async function loadPvzDatabase() {
                     hasMore = false;
                 }
 
-                await new Promise(r => setTimeout(r, 1500)); // Безопасная пауза
+                // Железобетонная пауза 2 секунды, чтобы не блокировал WAF
+                await new Promise(r => setTimeout(r, 2000));
+
             } catch (err) {
                 failCount++;
-                await new Promise(r => setTimeout(r, 4000));
+                console.log(`⚠️ Ошибка соединения: ${err.message}. Ждем 5 сек...`);
+                await new Promise(r => setTimeout(r, 5000));
             }
         }
 
-        cachedOzonPoints = allPoints;
-        console.log(`✅ ИТОГ: База ПВЗ готова. Всего точек: ${cachedOzonPoints.length}`);
+        if (allPoints.length > 0) {
+            cachedOzonPoints = allPoints;
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(cachedOzonPoints));
+            console.log(`✅ ИТОГ: База полностью загружена и сохранена на диск. Всего: ${cachedOzonPoints.length}`);
+        }
     } catch (e) {
-        console.log(`❌ Ошибка загрузки базы: ${e.message}`);
+        console.log(`❌ Критическая ошибка загрузки: ${e.message}`);
     } finally {
         isBaseLoading = false;
     }
 }
 
-setTimeout(() => { loadPvzDatabase(); }, 4000);
-setInterval(loadPvzDatabase, 7 * 24 * 60 * 60 * 1000);
+// Запуск скачивания с небольшой задержкой при старте
+setTimeout(() => { loadPvzDatabase(); }, 2000);
 
 function parseTSV(text) {
     const lines = text.replace(/\r/g, '').trim().split('\n');
@@ -222,9 +225,9 @@ async function getOptimalPackaging(username) {
             const boxWeight = parseFloat((b['вес пустой (г)'] || '0').replace(',', '.'));
             const matCost = parseFloat((b['стоимость материалов (₽)'] || '0').replace(',', '.'));
             const boxVol = bl * bw * bh;
-            const bDims = [bl, bw, bh].sort((a,b) => a - b);
+            const bDims = [bl, bw, bh].sort((a,b) => b - a);
 
-            if (boxVol >= totalVolume && bDims[0] <= bl && bDims[1] <= bw && bDims[2] <= bh) {
+            if (boxVol >= totalVolume && bDims[0] >= maxL && bDims[1] >= maxW && bDims[2] >= maxH) {
                 if (boxVol < minBoxVol) { 
                     minBoxVol = boxVol; 
                     selectedBox = { length: bl, width: bw, height: bh, weight: totalWeight + boxWeight, materialCost: matCost }; 
