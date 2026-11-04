@@ -8,6 +8,115 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ==========================================
+// 1. НАСТРОЙКИ ОПЛАТЫ (Modulbank & CloudKassir)
+// ==========================================
+const MODUL_TOKEN = "ZWU1MzQzZTctYmUzNi00YjlkLWI3MGMtNDEzYjM0YWYyNDA1OWMzZDlmMTgtOWNjNi00N2E1LTkwMzktNjI0NzIxODRhMGJi";
+const CP_ID = "pk_f36ba0fb530c9daf8fb7b97ec5dee";
+const CP_SECRET = "f92c854df15751ca8132d7b2e0b0078a";
+const MY_INN = "860231492889";
+const REDIRECT_URL = "https://hellopinky.ru";
+const TARGET_RETAIL_POINT_ID = "a828d71d-f5b5-4959-a605-d9a0192d8416";
+
+let state = {
+    waiting: {},
+    history: [],
+    retailPointId: TARGET_RETAIL_POINT_ID
+};
+
+function addLog(msg) {
+    const now = new Date().toLocaleTimeString('ru-RU');
+    state.history.unshift(`[${now}] ${msg}`);
+    if (state.history.length > 30) state.history.pop();
+    console.log(`[LOG] ${msg}`);
+}
+
+async function createDynamicQr(amount, description) {
+    const url = "https://api.modulbank.ru/v1/sbp/qr-codes/dynamic";
+    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}`, "Content-Type": "application/json" };
+    const payload = {
+        retailPointId: state.retailPointId,
+        sum: Number(amount),
+        extraInfo: description.substring(0, 140),
+        redirectUrl: REDIRECT_URL
+    };
+
+    try {
+        const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) });
+        if (res.ok) {
+            const data = await res.json();
+            return { link: data.payload, qrcId: data.qrcId };
+        } else {
+            const errText = await res.text();
+            addLog(`❌ Ошибка создания QR от Модульбанка (${res.status}): ${errText}`);
+        }
+    } catch (e) {
+        addLog(`❌ Сетевая ошибка при создании QR: ${e.message}`);
+    }
+    return { link: null, qrcId: null };
+}
+
+async function sendReceipt(amount, email, itemName) {
+    const auth = Buffer.from(`${CP_ID}:${CP_SECRET}`).toString('base64');
+    const payload = {
+        Inn: MY_INN,
+        Type: "Income",
+        CustomerReceipt: {
+            Items: [{ label: itemName, price: Number(amount), quantity: 1, amount: Number(amount), vat: null, method: 1, object: 1 }],
+            taxationSystem: 1,
+            email: email
+        }
+    };
+
+    try {
+        const res = await fetch("https://api.cloudpayments.ru/kkt/receipt", {
+            method: "POST",
+            headers: { "Authorization": `Basic ${auth}`, "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+            return true;
+        } else {
+            const errReceipt = await res.text();
+            addLog(`❌ Ошибка пробития чека CloudKassir (${res.status}): ${errReceipt}`);
+            return false;
+        }
+    } catch (e) {
+        addLog(`❌ Исключение при отправке чека: ${e.message}`);
+        return false;
+    }
+}
+
+// Фоновый робот проверки статуса СБП
+setInterval(async () => {
+    const headers = { "Authorization": `Bearer ${MODUL_TOKEN}` };
+    const now = Date.now();
+
+    for (const [qid, o] of Object.entries(state.waiting)) {
+        if (now - o.created_at > 86400000) {
+            delete state.waiting[qid];
+            continue;
+        }
+        try {
+            const res = await fetch(`https://api.modulbank.ru/v1/sbp/qr-codes/${qid}`, { method: "GET", headers });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.status === "Accepted") {
+                    const success = await sendReceipt(data.amount || o.amount, o.email, o.item);
+                    if (success) {
+                        delete state.waiting[qid];
+                        addLog(`✅ Оплата получена, чек для ${o.email} (${o.amount} ₽) успешно отправлен!`);
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+}, 10000);
+
+
+// ==========================================
+// 2. НАСТРОЙКИ ЛОГИСТИКИ (Ozon API)
+// ==========================================
 const CACHE_DIR = '/data';
 const CACHE_FILE = fs.existsSync(CACHE_DIR) 
     ? path.join(CACHE_DIR, 'pvz_cache.json') 
@@ -19,7 +128,6 @@ let isBaseLoading = false;
 if (fs.existsSync(CACHE_FILE)) {
     try {
         cachedOzonPoints = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-        
         if (cachedOzonPoints.length === 0 || (cachedOzonPoints[0] && cachedOzonPoints[0].address === "Адрес уточняется")) {
             console.log(`🗑️ Найден битый или пустой кэш. Удаляем и начинаем с чистого листа...`);
             cachedOzonPoints = [];
@@ -39,7 +147,6 @@ const TSV_BOXES = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQwoM70qCr98i
 const OZON_CLIENT_ID = "f0f0d638-7c3b-4f17-a5a1-d44b63bc8b1e";
 const OZON_CLIENT_SECRET = "a5a1d29c05115394f19204c5dcfd507a86f227fe193feb903d07946bdc6e1579";
 const OZON_SHIPMENT_METHOD_ID = 1020005031049340;
-
 let ozonDdosCookie = "";
 
 async function fetchOzon(url, options = {}) {
@@ -93,7 +200,6 @@ async function loadPvzDatabase() {
 
         let allPoints = [];
         let cursor = "";
-        // Ozon API /info строго требует не более 100 ID в запросе
         const limit = 100; 
         const headers = { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" };
 
@@ -261,6 +367,10 @@ async function getOptimalPackaging(username) {
     } catch (e) { return { error: "Ошибка чтения таблиц Google." }; }
 }
 
+// ==========================================
+// 3. API ЭНДПОИНТЫ
+// ==========================================
+
 app.get('/api/pvz-suggest', (req, res) => {
     const q = (req.query.q || '').toLowerCase().trim();
     if (q.length < 3 || cachedOzonPoints.length === 0) return res.json({ points: [] });
@@ -351,8 +461,32 @@ app.post('/api/delivery-calc', async (req, res) => {
     }
 });
 
+// Боевой маршрут оплаты через Модульбанк
 app.post('/api/pay', async (req, res) => {
-    res.json({ success: true, link: 'https://pay.modulbank.ru/' }); 
+    const { item, amount, email } = req.body;
+    
+    if (!item || !amount || amount <= 0 || !email) {
+        return res.status(400).json({ success: false, error: "Заполните все поля." });
+    }
+
+    const { link, qrcId } = await createDynamicQr(amount, item);
+    
+    if (link && qrcId) {
+        state.waiting[qrcId] = { email, item, amount, created_at: Date.now() };
+        addLog(`🌸 Создан СБП QR для ${email} на сумму ${amount} ₽ (${item})`);
+        return res.json({ success: true, link });
+    }
+
+    res.status(500).json({ success: false, error: "Ошибка генерации QR в Модульбанке. Проверьте логи сервера." });
+});
+
+app.get('/api/logs', (req, res) => {
+    res.json({ waiting: Object.keys(state.waiting).length, history: state.history });
+});
+
+// Гарантированный возврат главной страницы
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 const PORT = process.env.PORT || 3000;
