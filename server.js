@@ -232,7 +232,6 @@ function parseTSV(text) {
     });
 }
 
-// Универсальный поиск значения по ключевым словам в ключе объекта
 function findValueByKeys(obj, possibleKeys) {
     const keys = Object.keys(obj);
     for (const pk of possibleKeys) {
@@ -250,23 +249,36 @@ async function getOptimalPackaging(username) {
             return { error: "Отсутствует юзернейм для поиска." };
         }
 
-        const [ordRes, prodRes, boxRes] = await Promise.all([ fetch(TSV_ORDERS), fetch(TSV_PRODUCTS), fetch(TSV_BOXES) ]);
+        // Добавляем параметр nocache для обхода кэширования Google
+        const nocache = `&nocache=${Date.now()}`;
+        const [ordRes, prodRes, boxRes] = await Promise.all([ 
+            fetch(TSV_ORDERS + nocache), 
+            fetch(TSV_PRODUCTS + nocache), 
+            fetch(TSV_BOXES + nocache) 
+        ]);
+        
         const orders = parseTSV(await ordRes.text());
         const products = parseTSV(await prodRes.text());
         const boxes = parseTSV(await boxRes.text());
 
         const cleanUser = username.replace('@', '').trim().toLowerCase();
         
-        // Ищем заказы пользователя (проверяем колонки содержащие 'юзернейм' или 'клиент' или ' tg ')
         const userOrders = orders.filter(o => {
             const uVal = findValueByKeys(o, ['юзер', 'клиент', 'tg', 'telegram', 'ник']);
             return uVal.replace('@', '').trim().toLowerCase() === cleanUser;
         });
         
-        if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены в таблице." };
+        if (userOrders.length === 0) {
+            addLog(`❌ Заказы для ${cleanUser} не найдены в таблице.`);
+            return { error: "Заказы для этого юзернейма не найдены." };
+        }
 
         let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0;
         let itemNames = []; 
+
+        if (products.length > 0) {
+            addLog(`🔍 Колонки в товарах: ${Object.keys(products[0]).join(' | ')}`);
+        }
 
         userOrders.forEach(o => {
             const orderItemName = findValueByKeys(o, ['товар', 'название', 'позици']).trim().toLowerCase();
@@ -275,10 +287,12 @@ async function getOptimalPackaging(username) {
             
             if (orderItemName) itemNames.push(`${orderItemName} (${qty} шт.)`); 
 
-            // Ищем товар в справочнике продуктов по частичному или точному совпадению
             const prod = products.find(p => {
                 const pName = findValueByKeys(p, ['товар', 'название', 'позици']).trim().toLowerCase();
-                return pName === orderItemName || (orderItemName && pName.includes(orderItemName)) || (pName && orderItemName.includes(pName));
+                // Убираем лишние пробелы для точного сравнения
+                const cleanPName = pName.replace(/\s+/g, ' ');
+                const cleanOrderName = orderItemName.replace(/\s+/g, ' ');
+                return cleanPName === cleanOrderName || (cleanOrderName && cleanPName.includes(cleanOrderName)) || (cleanPName && cleanOrderName.includes(cleanPName));
             });
 
             if (prod) {
@@ -292,7 +306,7 @@ async function getOptimalPackaging(username) {
                 const h = parseFloat(heiStr.replace(',', '.')) || 0;
                 const weight = parseFloat(weiStr.replace(',', '.')) || 0;
 
-                console.log(`✅ Найден товар: "${orderItemName}" -> Д: ${l}, Ш: ${w}, В: ${h}, Вес: ${weight}`);
+                addLog(`✅ Найден товар: "${orderItemName}" -> Д:${l}, Ш:${w}, В:${h}, Вес:${weight}`);
 
                 totalVolume += (l * w * h) * qty;
                 totalWeight += weight * qty;
@@ -301,7 +315,7 @@ async function getOptimalPackaging(username) {
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
             } else {
-                console.log(`⚠️ ВНИМАНИЕ: Товар "${orderItemName}" не найден в таблице продуктов! Применяем базовый объем.`);
+                addLog(`⚠️ Товар НЕ НАЙДЕН в базе продуктов: "${orderItemName}"`);
                 totalVolume += (20 * 15 * 5) * qty;
                 totalWeight += 150 * qty;
                 if (20 > maxL) maxL = 20;
@@ -330,10 +344,16 @@ async function getOptimalPackaging(username) {
             }
         });
 
-        if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
+        if (!selectedBox) {
+            addLog(`⚠️ Коробка не подобрана. Ставим дефолт 30x20x15`);
+            selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
+        } else {
+            addLog(`📦 Выбрана коробка: ${selectedBox.length}x${selectedBox.width}x${selectedBox.height} см`);
+        }
+
         return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; 
     } catch (e) { 
-        console.log(`❌ Ошибка getOptimalPackaging: ${e.message}`);
+        addLog(`❌ Ошибка getOptimalPackaging: ${e.message}`);
         return { error: "Внутренняя ошибка таблиц." }; 
     }
 }
@@ -562,19 +582,13 @@ app.post('/api/pay', async (req, res) => {
     }
 
     // === ОБХОД ОПЛАТЫ ДЛЯ ДОСТАВКИ ===
-    // Если клиент нажал на вкладку доставки, не генерируем QR, а сразу создаем заказ в Ozon
     if (paymentType === 'delivery') {
         addLog(`🚀 Тестовый режим: Оплата доставки пропущена. Формируем заказ для ${tgUser}`);
-        
-        // Запускаем асинхронно функцию создания заказа
         createOzonOrder({ email, item, amount, paymentType, tgUser, phone, pvzAddress, needInsurance, insAmount });
-        
-        // Отдаем клиенту команду на успешное перенаправление (просто перезагрузим страницу)
         return res.json({ success: true, link: REDIRECT_URL });
     }
     // ==================================
 
-    // Классическая оплата для Предзаказов и Основных оплат
     const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
     const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
     
