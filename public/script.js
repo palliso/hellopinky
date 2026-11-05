@@ -180,22 +180,28 @@ async function handlePayment(e) {
   const btn = document.getElementById('submitBtn');
   let finalItem = "";
   let finalAmount = 0;
+  
+  // Дополнительные данные для Ozon (теперь они собираются правильно)
+  let tgUser = "", phone = "", pvzAddress = "", needInsurance = false, insAmount = "0";
 
   if (currentPaymentType === 'delivery') {
-    const tg = document.getElementById('tgInput').value.trim();
-    const phone = document.getElementById('phoneInput').value.trim();
+    tgUser = document.getElementById('tgInput').value.trim();
+    phone = document.getElementById('phoneInput').value.trim();
+    needInsurance = document.getElementById('insuranceToggle').checked;
+    insAmount = document.getElementById('insuranceAmount').value.trim();
     
     if (currentDeliveryCost <= 0 || !confirmedPvzAddress) {
         showToast('Сначала нажмите "СЧИТАТЬ" и дождитесь расчета стоимости.');
         return;
     }
-    if (!phone) {
-        showToast('Пожалуйста, укажите номер телефона.');
+    if (!phone || !tgUser) {
+        showToast('Пожалуйста, укажите юзернейм и номер телефона.');
         return;
     }
-    // Назначение платежа
+
     finalItem = "доставка озон";
     finalAmount = currentDeliveryCost;
+    pvzAddress = confirmedPvzAddress;
   } else {
     let typeName = currentPaymentType === 'preorder' ? 'Предзаказ' : 'Оплата';
     finalItem = `${typeName}: ${document.getElementById('itemInput').value.trim()}`;
@@ -203,7 +209,7 @@ async function handlePayment(e) {
   }
 
   if (btn) {
-    btn.textContent = 'ГЕНЕРАЦИЯ СЧЕТА...';
+    btn.textContent = 'ОБРАБОТКА...';
     btn.disabled = true;
   }
 
@@ -211,13 +217,23 @@ async function handlePayment(e) {
     const response = await fetch('/api/pay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ item: finalItem, amount: finalAmount, email, paymentType: currentPaymentType })
+      body: JSON.stringify({ 
+          item: finalItem, 
+          amount: finalAmount, 
+          email, 
+          paymentType: currentPaymentType,
+          tgUser, 
+          phone, 
+          pvzAddress, 
+          needInsurance, 
+          insAmount 
+      }) // Теперь все нужные поля летят на сервер!
     });
 
     const data = await response.json();
 
     if (data.success && data.link) {
-      showToast('Счёт создан! Перенаправляем на оплату...');
+      showToast('Успешно! Перенаправляем...');
       setTimeout(() => window.location.href = data.link, 600);
     } else {
       showToast(data.error || 'Ошибка формирования счёта.');
