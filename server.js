@@ -234,7 +234,6 @@ function parseTSV(text) {
 
 async function getOptimalPackaging(username) {
     try {
-        // Пуленепробиваемая проверка на пустое имя
         if (!username || typeof username !== 'string') {
             return { error: "Отсутствует юзернейм для поиска." };
         }
@@ -409,6 +408,11 @@ setInterval(async () => {
                     if (success) {
                         delete state.waiting[qid];
                         addLog(`✅ Оплата получена, чек для ${o.email} успешно отправлен!`);
+                        
+                        // Создаем отправление Ozon только после успешной оплаты
+                        if (o.paymentType === 'delivery') {
+                            createOzonOrder(o);
+                        }
                     }
                 }
             }
@@ -516,20 +520,7 @@ app.post('/api/pay', async (req, res) => {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    // === ОБХОД ОПЛАТЫ ДЛЯ ДОСТАВКИ ===
-    // Если клиент нажал на вкладку доставки, не генерируем QR, а сразу создаем заказ в Ozon
-    if (paymentType === 'delivery') {
-        addLog(`🚀 Тестовый режим: Оплата доставки пропущена. Формируем заказ для ${tgUser}`);
-        
-        // Запускаем асинхронно функцию создания заказа
-        createOzonOrder({ email, item, amount, paymentType, tgUser, phone, pvzAddress, needInsurance, insAmount });
-        
-        // Отдаем клиенту команду на успешное перенаправление (просто перезагрузим страницу)
-        return res.json({ success: true, link: REDIRECT_URL });
-    }
-    // ==================================
-
-    // Классическая оплата для Предзаказов и Основных оплат
+    // Возвращена реальная оплата через Модульбанк для всех типов платежей
     const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
     const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
     
