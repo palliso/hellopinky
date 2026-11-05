@@ -23,7 +23,7 @@ const REDIRECT_URL = "https://hellopinky.ru";
 
 // Конфигурация торговых точек для разных вкладок
 const RETAIL_POINTS = {
-    main: "8a838daf-cd51-474a-b444-854e8f8263b6", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
+    main: "ВСТАВЬ_СЮДА_ID_ТОЧКИ_ОСНОВНЫХ_ОПЛАТ", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
     preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
 };
 
@@ -234,6 +234,7 @@ function parseTSV(text) {
 
 async function getOptimalPackaging(username) {
     try {
+        // Пуленепробиваемая проверка на пустое имя
         if (!username || typeof username !== 'string') {
             return { error: "Отсутствует юзернейм для поиска." };
         }
@@ -408,11 +409,6 @@ setInterval(async () => {
                     if (success) {
                         delete state.waiting[qid];
                         addLog(`✅ Оплата получена, чек для ${o.email} успешно отправлен!`);
-                        
-                        // Создаем отправление Ozon только после успешной оплаты
-                        if (o.paymentType === 'delivery') {
-                            createOzonOrder(o);
-                        }
                     }
                 }
             }
@@ -520,7 +516,20 @@ app.post('/api/pay', async (req, res) => {
         return res.status(400).json({ success: false, error: "Заполните все поля." });
     }
 
-    // Возвращена реальная оплата через Модульбанк для всех типов платежей
+    // === ОБХОД ОПЛАТЫ ДЛЯ ДОСТАВКИ ===
+    // Если клиент нажал на вкладку доставки, не генерируем QR, а сразу создаем заказ в Ozon
+    if (paymentType === 'delivery') {
+        addLog(`🚀 Тестовый режим: Оплата доставки пропущена. Формируем заказ для ${tgUser}`);
+        
+        // Запускаем асинхронно функцию создания заказа
+        createOzonOrder({ email, item, amount, paymentType, tgUser, phone, pvzAddress, needInsurance, insAmount });
+        
+        // Отдаем клиенту команду на успешное перенаправление (просто перезагрузим страницу)
+        return res.json({ success: true, link: REDIRECT_URL });
+    }
+    // ==================================
+
+    // Классическая оплата для Предзаказов и Основных оплат
     const targetPointId = RETAIL_POINTS[paymentType] || RETAIL_POINTS.main;
     const { link, qrcId } = await createDynamicQr(amount, item, targetPointId);
     
