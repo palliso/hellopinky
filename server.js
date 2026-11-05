@@ -249,7 +249,7 @@ async function getOptimalPackaging(username) {
             return { error: "Отсутствует юзернейм для поиска." };
         }
 
-        // Добавляем параметр nocache для обхода кэширования Google
+        // Обходим кэширование Google Таблиц
         const nocache = `&nocache=${Date.now()}`;
         const [ordRes, prodRes, boxRes] = await Promise.all([ 
             fetch(TSV_ORDERS + nocache), 
@@ -289,7 +289,6 @@ async function getOptimalPackaging(username) {
 
             const prod = products.find(p => {
                 const pName = findValueByKeys(p, ['товар', 'название', 'позици']).trim().toLowerCase();
-                // Убираем лишние пробелы для точного сравнения
                 const cleanPName = pName.replace(/\s+/g, ' ');
                 const cleanOrderName = orderItemName.replace(/\s+/g, ' ');
                 return cleanPName === cleanOrderName || (cleanOrderName && cleanPName.includes(cleanOrderName)) || (cleanPName && cleanOrderName.includes(cleanPName));
@@ -558,7 +557,11 @@ app.post('/api/delivery-calc', async (req, res) => {
             const ozonTariff = parseFloat(data.results[0]?.posting?.estimated_delivery_cost?.amount) || 0; 
             const ozonInsurance = parseFloat(data.results[0]?.posting?.estimated_insurance_cost?.amount) || 0; 
             
-            const finalPrice = Math.ceil((ozonTariff + ozonInsurance + packData.box.materialCost + 20) / 0.92);
+            // Фиксированные сборы партнеров Ozon (Drop-off 10₽ + Доставка 2₽ + Выдача 30₽)
+            const ozonPartnerFees = 42;
+            
+            // Итоговая формула с учетом всех сборов и налога 8%
+            const finalPrice = Math.ceil((ozonTariff + ozonInsurance + ozonPartnerFees + packData.box.materialCost + 20) / 0.92);
             
             res.json({ 
                 success: true, 
