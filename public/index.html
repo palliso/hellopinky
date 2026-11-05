@@ -23,7 +23,7 @@
         <div class="tabs" style="display: flex; gap: 10px; margin-bottom: 20px;">
           <button type="button" class="tab-btn active" data-type="main" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: #ff4d85; color: white; cursor: pointer; font-size: 13px;">Оплаты</button>
           <button type="button" class="tab-btn" data-type="preorder" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Предзаказы</button>
-          <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Доставка Ozon</button>
+          <button type="button" class="tab-btn" data-type="delivery" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #ff4d85; background: transparent; color: #ff4d85; cursor: pointer; font-size: 13px;">Доставка</button>
         </div>
 
         <div id="productFields">
@@ -57,7 +57,6 @@
             <ul id="autocompleteList" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ff4d85; border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 1000; padding: 0; margin: 5px 0 0 0; list-style: none; box-shadow: 0 4px 12px rgba(0,0,0,0.1);"></ul>
           </div>
 
-          <!-- БЛОК СТРАХОВКИ -->
           <div class="form-group" style="padding-top: 15px;">
             <label style="display:flex; align-items:center; gap: 8px; font-size:13px; cursor:pointer;">
               <input type="checkbox" id="insuranceToggle" onchange="toggleInsurance()">
@@ -66,7 +65,6 @@
             <input type="number" id="insuranceAmount" class="form-control" style="display:none; margin-top: 8px;" placeholder="На какую сумму? (например: 5000)" min="1" step="1" />
           </div>
 
-          <!-- ТОТ САМЫЙ БЛОК ВЫВОДА РЕЗУЛЬТАТОВ, ИЗ-ЗА ОТСУТСТВИЯ КОТОРОГО ВСЕ ЛОМАЛОСЬ -->
           <div id="deliveryInfoBox" style="display: none; margin-top: 15px; padding: 12px; background: #fff5f8; border: 1px solid #ff4d85; border-radius: 8px; font-size: 13px;">
             <div><b>Стоимость доставки:</b> <span id="deliveryCostDisplay">...</span></div>
             <div style="margin-top: 8px; color: #555;"><b>Ваши позиции:</b> <span id="deliveryItemsDisplay">...</span></div>
@@ -89,6 +87,7 @@
   </div>
 
   <div class="toast" id="toastBox"></div>
-  <script src="script.js"></script>
+  <!-- ВОТ ЭТА СТРОЧКА ПРОБИВАЕТ КЭШ БРАУЗЕРА И ХОСТИНГА -->
+  <script src="script.js?v=2"></script>
 </body>
 </html>
