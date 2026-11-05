@@ -23,7 +23,7 @@ const REDIRECT_URL = "https://hellopinky.ru";
 
 // Конфигурация торговых точек для разных вкладок
 const RETAIL_POINTS = {
-    main: "8a838daf-cd51-474a-b444-854e8f8263b6", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
+    main: "ВСТАВЬ_СЮДА_ID_ТОЧКИ_ОСНОВНЫХ_ОПЛАТ", // <--- ВСТАВЬ СВОЙ ID ДЛЯ ОСНОВНЫХ ОПЛАТ
     preorder: "a828d71d-f5b5-4959-a605-d9a0192d8416"
 };
 
@@ -232,9 +232,20 @@ function parseTSV(text) {
     });
 }
 
+// Универсальный поиск значения по ключевым словам в ключе объекта
+function findValueByKeys(obj, possibleKeys) {
+    const keys = Object.keys(obj);
+    for (const pk of possibleKeys) {
+        const foundKey = keys.find(k => k.includes(pk));
+        if (foundKey && obj[foundKey] !== undefined && obj[foundKey] !== "") {
+            return obj[foundKey];
+        }
+    }
+    return "";
+}
+
 async function getOptimalPackaging(username) {
     try {
-        // Пуленепробиваемая проверка на пустое имя
         if (!username || typeof username !== 'string') {
             return { error: "Отсутствует юзернейм для поиска." };
         }
@@ -245,31 +256,57 @@ async function getOptimalPackaging(username) {
         const boxes = parseTSV(await boxRes.text());
 
         const cleanUser = username.replace('@', '').trim().toLowerCase();
-        const userOrders = orders.filter(o => (o['юзернейм'] || '').replace('@', '').trim().toLowerCase() === cleanUser);
         
-        if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены." };
+        // Ищем заказы пользователя (проверяем колонки содержащие 'юзернейм' или 'клиент' или ' tg ')
+        const userOrders = orders.filter(o => {
+            const uVal = findValueByKeys(o, ['юзер', 'клиент', 'tg', 'telegram', 'ник']);
+            return uVal.replace('@', '').trim().toLowerCase() === cleanUser;
+        });
+        
+        if (userOrders.length === 0) return { error: "Заказы для этого юзернейма не найдены в таблице." };
 
         let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0;
         let itemNames = []; 
 
         userOrders.forEach(o => {
-            const orderItemName = (o['товар (точное название)'] || o['товар'] || '').trim().toLowerCase();
-            const qty = parseInt(o['кол-во'] || '1') || 1;
+            const orderItemName = findValueByKeys(o, ['товар', 'название', 'позици']).trim().toLowerCase();
+            const qtyStr = findValueByKeys(o, ['кол', 'quantity', 'штук', 'count']);
+            const qty = parseInt(qtyStr || '1') || 1;
             
             if (orderItemName) itemNames.push(`${orderItemName} (${qty} шт.)`); 
 
-            const prod = products.find(p => (p['товар'] || '').trim().toLowerCase() === orderItemName);
+            // Ищем товар в справочнике продуктов по частичному или точному совпадению
+            const prod = products.find(p => {
+                const pName = findValueByKeys(p, ['товар', 'название', 'позици']).trim().toLowerCase();
+                return pName === orderItemName || (orderItemName && pName.includes(orderItemName)) || (pName && orderItemName.includes(pName));
+            });
+
             if (prod) {
-                const l = parseFloat((prod['длина (см)'] || '0').replace(',', '.')) || 0;
-                const w = parseFloat((prod['ширина (см)'] || '0').replace(',', '.')) || 0;
-                const h = parseFloat((prod['высота (см)'] || '0').replace(',', '.')) || 0;
-                const weight = parseFloat((prod['вес (г)'] || '0').replace(',', '.')) || 0;
+                const lenStr = findValueByKeys(prod, ['длин', 'len']);
+                const widStr = findValueByKeys(prod, ['ширин', 'wid']);
+                const heiStr = findValueByKeys(prod, ['высот', 'heig', 'толщин']);
+                const weiStr = findValueByKeys(prod, ['вес', 'weight', 'грамм']);
+
+                const l = parseFloat(lenStr.replace(',', '.')) || 0;
+                const w = parseFloat(widStr.replace(',', '.')) || 0;
+                const h = parseFloat(heiStr.replace(',', '.')) || 0;
+                const weight = parseFloat(weiStr.replace(',', '.')) || 0;
+
+                console.log(`✅ Найден товар: "${orderItemName}" -> Д: ${l}, Ш: ${w}, В: ${h}, Вес: ${weight}`);
+
                 totalVolume += (l * w * h) * qty;
                 totalWeight += weight * qty;
                 const dims = [l, w, h].sort((a,b) => b - a);
                 if (dims[0] > maxL) maxL = dims[0];
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
+            } else {
+                console.log(`⚠️ ВНИМАНИЕ: Товар "${orderItemName}" не найден в таблице продуктов! Применяем базовый объем.`);
+                totalVolume += (20 * 15 * 5) * qty;
+                totalWeight += 150 * qty;
+                if (20 > maxL) maxL = 20;
+                if (15 > maxW) maxW = 15;
+                if (5 > maxH) maxH = 5;
             }
         });
 
@@ -277,11 +314,11 @@ async function getOptimalPackaging(username) {
 
         let selectedBox = null, minBoxVol = Infinity;
         boxes.forEach(b => {
-            const bl = parseFloat((b['длина (см)'] || '0').replace(',', '.'));
-            const bw = parseFloat((b['ширина (см)'] || '0').replace(',', '.'));
-            const bh = parseFloat((b['высота (см)'] || '0').replace(',', '.'));
-            const boxWeight = parseFloat((b['вес пустой (г)'] || '0').replace(',', '.'));
-            const matCost = parseFloat((b['стоимость материалов (₽)'] || '0').replace(',', '.'));
+            const bl = parseFloat(findValueByKeys(b, ['длин']).replace(',', '.')) || 0;
+            const bw = parseFloat(findValueByKeys(b, ['ширин']).replace(',', '.')) || 0;
+            const bh = parseFloat(findValueByKeys(b, ['высот']).replace(',', '.')) || 0;
+            const boxWeight = parseFloat(findValueByKeys(b, ['вес', 'пуст']).replace(',', '.')) || 0;
+            const matCost = parseFloat(findValueByKeys(b, ['стоимост', 'материал']).replace(',', '.')) || 0;
             const boxVol = bl * bw * bh;
             const bDims = [bl, bw, bh].sort((a,b) => b - a);
 
@@ -295,7 +332,10 @@ async function getOptimalPackaging(username) {
 
         if (!selectedBox) selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
         return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; 
-    } catch (e) { return { error: "Внутренняя ошибка таблиц." }; }
+    } catch (e) { 
+        console.log(`❌ Ошибка getOptimalPackaging: ${e.message}`);
+        return { error: "Внутренняя ошибка таблиц." }; 
+    }
 }
 
 // ==========================================
@@ -409,6 +449,11 @@ setInterval(async () => {
                     if (success) {
                         delete state.waiting[qid];
                         addLog(`✅ Оплата получена, чек для ${o.email} успешно отправлен!`);
+                        
+                        // Создаем отправление Ozon только после успешной оплаты
+                        if (o.paymentType === 'delivery') {
+                            createOzonOrder(o);
+                        }
                     }
                 }
             }
