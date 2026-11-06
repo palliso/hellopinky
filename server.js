@@ -249,7 +249,6 @@ async function getOptimalPackaging(username) {
             return { error: "Отсутствует юзернейм для поиска." };
         }
 
-        // Обходим кэширование Google Таблиц
         const nocache = `&nocache=${Date.now()}`;
         const [ordRes, prodRes, boxRes] = await Promise.all([ 
             fetch(TSV_ORDERS + nocache), 
@@ -275,10 +274,7 @@ async function getOptimalPackaging(username) {
 
         let totalVolume = 0, totalWeight = 0, maxL = 0, maxW = 0, maxH = 0;
         let itemNames = []; 
-
-        if (products.length > 0) {
-            addLog(`🔍 Колонки в товарах: ${Object.keys(products[0]).join(' | ')}`);
-        }
+        let totalItemsCount = 0;
 
         userOrders.forEach(o => {
             const orderItemName = findValueByKeys(o, ['товар', 'название', 'позици']).trim().toLowerCase();
@@ -305,18 +301,18 @@ async function getOptimalPackaging(username) {
                 const h = parseFloat(heiStr.replace(',', '.')) || 0;
                 const weight = parseFloat(weiStr.replace(',', '.')) || 0;
 
-                addLog(`✅ Найден товар: "${orderItemName}" -> Д:${l}, Ш:${w}, В:${h}, Вес:${weight}`);
-
                 totalVolume += (l * w * h) * qty;
                 totalWeight += weight * qty;
+                totalItemsCount += qty;
+
                 const dims = [l, w, h].sort((a,b) => b - a);
                 if (dims[0] > maxL) maxL = dims[0];
                 if (dims[1] > maxW) maxW = dims[1];
                 if (dims[2] > maxH) maxH = dims[2];
             } else {
-                addLog(`⚠️ Товар НЕ НАЙДЕН в базе продуктов: "${orderItemName}"`);
                 totalVolume += (20 * 15 * 5) * qty;
                 totalWeight += 150 * qty;
+                totalItemsCount += qty;
                 if (20 > maxL) maxL = 20;
                 if (15 > maxW) maxW = 15;
                 if (5 > maxH) maxH = 5;
@@ -325,6 +321,14 @@ async function getOptimalPackaging(username) {
 
         if (totalVolume === 0) return { error: "Не удалось определить габариты." };
 
+        // Внедрение коэффициента укладки в зависимости от количества позиций
+        let packingFactor = 1.0;
+        if (totalItemsCount === 2) packingFactor = 1.25;
+        if (totalItemsCount >= 3) packingFactor = 1.4;
+
+        const requiredVolume = totalVolume * packingFactor;
+        addLog(`📦 Чистый объем: ${totalVolume.toFixed(0)} см³. Требуемый объем с учетом зазоров (x${packingFactor}): ${requiredVolume.toFixed(0)} см³`);
+
         let selectedBox = null, minBoxVol = Infinity;
         boxes.forEach(b => {
             const bl = parseFloat(findValueByKeys(b, ['длин']).replace(',', '.')) || 0;
@@ -332,10 +336,11 @@ async function getOptimalPackaging(username) {
             const bh = parseFloat(findValueByKeys(b, ['высот']).replace(',', '.')) || 0;
             const boxWeight = parseFloat(findValueByKeys(b, ['вес', 'пуст']).replace(',', '.')) || 0;
             const matCost = parseFloat(findValueByKeys(b, ['стоимост', 'материал']).replace(',', '.')) || 0;
+            
             const boxVol = bl * bw * bh;
             const bDims = [bl, bw, bh].sort((a,b) => b - a);
 
-            if (boxVol >= totalVolume && bDims[0] >= maxL && bDims[1] >= maxW && bDims[2] >= maxH) {
+            if (boxVol >= requiredVolume && bDims[0] >= maxL && bDims[1] >= maxW && bDims[2] >= maxH) {
                 if (boxVol < minBoxVol) { 
                     minBoxVol = boxVol; 
                     selectedBox = { length: bl, width: bw, height: bh, weight: totalWeight + boxWeight, materialCost: matCost }; 
@@ -344,10 +349,10 @@ async function getOptimalPackaging(username) {
         });
 
         if (!selectedBox) {
-            addLog(`⚠️ Коробка не подобрана. Ставим дефолт 30x20x15`);
+            addLog(`⚠️ Подходящая коробка под объем ${requiredVolume.toFixed(0)} см³ не найдена. Применяется 30x20x15`);
             selectedBox = { length: 30, width: 20, height: 15, weight: totalWeight + 150, materialCost: 80 };
         } else {
-            addLog(`📦 Выбрана коробка: ${selectedBox.length}x${selectedBox.width}x${selectedBox.height} см`);
+            addLog(`✅ Итоговая коробка: ${selectedBox.length}x${selectedBox.width}x${selectedBox.height} см`);
         }
 
         return { success: true, box: selectedBox, itemsStr: itemNames.join(', ') }; 
